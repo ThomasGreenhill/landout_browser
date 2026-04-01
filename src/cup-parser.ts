@@ -73,7 +73,8 @@ export function parseCupFile(text: string): Waypoint[] {
       continue;
     }
 
-    const styleNum = parseInt(fields[5], 10);
+    // CUP fields: name,code,country,lat,lon,elev,style,rwdir,rwlen,rwwidth,freq,desc
+    const styleNum = parseInt(fields[6] || '0', 10);
     const style = Object.values(WaypointStyle).includes(styleNum)
       ? (styleNum as WaypointStyle)
       : WaypointStyle.Unknown;
@@ -85,7 +86,7 @@ export function parseCupFile(text: string): Waypoint[] {
         country: fields[2] || '',
         lat: parseCupCoord(fields[3]),
         lon: parseCupCoord(fields[4]),
-        elev: parseElevation(fields[6] || ''),
+        elev: parseElevation(fields[5] || ''),
         style,
         rwdir: parseInt(fields[7] || '0', 10) || 0,
         rwlen: parseLength(fields[8] || ''),

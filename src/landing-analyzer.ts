@@ -1,12 +1,11 @@
 import { Waypoint } from './types';
-import { AnalysisResult } from './analysis-types';
-import { compositeTiles } from './tile-compositer';
+import { compositeTiles, CompositeResult } from './tile-compositer';
+import { detectField, FieldDetection } from './field-detector';
 
 const OLLAMA_URL_KEY = 'landout-ollama-url';
 const OLLAMA_MODEL_KEY = 'landout-ollama-model';
 const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
 const DEFAULT_OLLAMA_MODEL = 'gemma3:4b';
-
 
 export function getOllamaUrl(): string {
   return localStorage.getItem(OLLAMA_URL_KEY) || DEFAULT_OLLAMA_URL;
@@ -21,9 +20,6 @@ export function setOllamaSettings(url: string, model: string): void {
   localStorage.setItem(OLLAMA_MODEL_KEY, model);
 }
 
-/**
- * Check if Ollama is reachable and the model is available.
- */
 export async function checkOllamaConnection(): Promise<{ ok: boolean; error?: string; models?: string[] }> {
   const url = getOllamaUrl();
   try {
@@ -33,7 +29,7 @@ export async function checkOllamaConnection(): Promise<{ ok: boolean; error?: st
     const models = (data.models || []).map((m: { name: string }) => m.name);
     const currentModel = getOllamaModel();
     if (models.length === 0) {
-      return { ok: false, error: 'No models installed. Run: ollama pull llama3.2-vision', models };
+      return { ok: false, error: 'No models installed. Run: ollama pull gemma3:4b', models };
     }
     if (!models.some((m: string) => m.startsWith(currentModel))) {
       return { ok: false, error: `Model "${currentModel}" not found. Available: ${models.join(', ')}`, models };
@@ -44,10 +40,6 @@ export async function checkOllamaConnection(): Promise<{ ok: boolean; error?: st
   }
 }
 
-/**
- * Show a modal for Ollama connection settings.
- * Returns true if user saved, false if cancelled.
- */
 export function promptForSettings(): Promise<boolean> {
   return new Promise((resolve) => {
     const currentUrl = getOllamaUrl();
@@ -59,11 +51,11 @@ export function promptForSettings(): Promise<boolean> {
       <div class="api-key-modal-content">
         <h3 style="margin:0 0 8px">Ollama Settings</h3>
         <p style="font-size:13px;color:rgba(255,255,255,0.6);margin:0 0 4px">
-          Analysis runs locally via Ollama — no API key needed.
+          AI description is optional — field detection uses local computer vision.
         </p>
         <p style="font-size:12px;color:rgba(255,255,255,0.4);margin:0 0 12px">
           Install: <a href="https://ollama.com" target="_blank" style="color:#3b82f6">ollama.com</a>
-          &bull; Then run: <code style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">ollama pull llama3.2-vision</code>
+          &bull; Then run: <code style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">ollama pull gemma3:4b</code>
         </p>
         <label style="font-size:12px;color:rgba(255,255,255,0.5);display:block;margin-bottom:2px">Ollama URL</label>
         <input type="text" id="ollama-url-input" value="${currentUrl}" autocomplete="off" />
@@ -119,117 +111,63 @@ export function promptForSettings(): Promise<boolean> {
   });
 }
 
+// --- Detection output (CV-based) ---
+
+export interface DetectionOutput {
+  detection: FieldDetection;
+  composite: CompositeResult;
+}
+
+const detectionCache = new Map<string, DetectionOutput>();
+
 function cacheKey(lat: number, lon: number): string {
   return `${lat.toFixed(5)},${lon.toFixed(5)}`;
 }
 
-function buildPrompt(
-  wp: Waypoint,
-  _metersPerPx: number,
-  totalWidthM: number,
-): string {
-  const imgSize = 640;
-  const mPerPx = (totalWidthM / imgSize).toFixed(1);
-
-  return `Look at this satellite image. Red crosshair marks a glider landing waypoint "${wp.name}".
-Image scale: ${mPerPx} meters per pixel. Image is ${imgSize}px wide, covering ${Math.round(totalWidthM)}m total. Center is pixel (${imgSize / 2},${imgSize / 2}). North=up.${wp.rwdir ? ` Listed runway: ${wp.rwdir}°, ${wp.rwlen}m.` : ''}
-
-Describe what you see: How long and wide is the landable field in meters? Use the scale: measure pixels and multiply by ${mPerPx}. What is the surface? List obstructions. Where is the field center in pixels? Rate suitability 1-5.
-
-End with a JSON block:
-\`\`\`json
-{"landableArea":{"lengthM":LENGTH,"widthM":WIDTH,"orientationDeg":HEADING,"usableLengthM":USABLE,"centerPixel":{"x":CX,"y":CY}},"surface":{"primary":"TYPE","confidence":"CONF","notes":"NOTES"},"obstructions":[{"type":"TYPE","location":"WHERE","severity":"SEV","description":"DESC"}],"approach":{"bestDirection":"DIR","hazards":["HAZ"],"notes":"NOTES"},"suitability":{"rating":N,"summary":"TEXT"}}
-\`\`\``;
-}
-
-function tryParseJson(text: string): Record<string, unknown> | null {
-  // Try direct parse
-  try { return JSON.parse(text); } catch { /* continue */ }
-
-  // Try extracting JSON from code fences
-  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-  if (fenceMatch) {
-    try { return JSON.parse(fenceMatch[1]); } catch { /* continue */ }
-  }
-
-  // Try extracting the outermost { ... } block
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start !== -1 && end > start) {
-    try { return JSON.parse(text.slice(start, end + 1)); } catch { /* continue */ }
-  }
-
-  return null;
-}
-
-function parseAnalysisResponse(text: string): AnalysisResult {
-  const parsed = tryParseJson(text);
-
-  if (parsed) {
-    const result = parsed as unknown as AnalysisResult;
-    result.rawResponse = text;
-    if (!result.landableArea) {
-      result.landableArea = { lengthM: 0, widthM: 0, orientationDeg: 0, usableLengthM: 0 };
-    }
-    if (!result.surface) {
-      result.surface = { primary: 'unknown', confidence: 'low', notes: '' };
-    }
-    if (!result.obstructions) {
-      result.obstructions = [];
-    }
-    if (!result.approach) {
-      result.approach = { bestDirection: 'Unknown', hazards: [], notes: '' };
-    }
-    if (!result.suitability) {
-      result.suitability = { rating: 3, summary: 'Analysis incomplete' };
-    }
-    return result;
-  }
-
-  // JSON parsing failed — return a raw-text result so the user still sees the analysis
-  return {
-    landableArea: { lengthM: 0, widthM: 0, orientationDeg: 0, usableLengthM: 0 },
-    surface: { primary: 'unknown', confidence: 'low', notes: '' },
-    obstructions: [],
-    approach: { bestDirection: '', hazards: [], notes: '' },
-    suitability: { rating: 0 as AnalysisResult['suitability']['rating'], summary: '' },
-    rawResponse: text,
-  };
-}
-
-export interface AnalysisOutput {
-  result: AnalysisResult;
-  pixelToLatLon: (px: number, py: number) => { lat: number; lon: number };
-}
-
-const outputCache = new Map<string, AnalysisOutput>();
-
-export async function analyzeLandingSite(
+/**
+ * Instant field detection using client-side computer vision.
+ * No AI needed — runs in ~100ms.
+ */
+export async function detectLandingSite(
   wp: Waypoint,
   onProgress: (message: string) => void,
-): Promise<AnalysisOutput> {
+): Promise<DetectionOutput> {
   const key = cacheKey(wp.lat, wp.lon);
-  const cached = outputCache.get(key);
+  const cached = detectionCache.get(key);
   if (cached) return cached;
 
-  // Check Ollama is reachable
-  onProgress('Connecting to Ollama...');
-  const check = await checkOllamaConnection();
-  if (!check.ok) {
-    throw new Error(check.error || 'Cannot connect to Ollama');
-  }
-
   onProgress('Fetching satellite tiles...');
-  const zoom = 17;
-  const composite = await compositeTiles(wp.lat, wp.lon, zoom, 3);
+  const composite = await compositeTiles(wp.lat, wp.lon, 17, 3);
 
-  // Strip the data URL prefix to get raw base64
+  onProgress('Detecting field...');
+  const detection = detectField(
+    composite.canvas,
+    composite.waypointPixel.x,
+    composite.waypointPixel.y,
+    composite.metersPerPx,
+  );
+
+  const output: DetectionOutput = { detection, composite };
+  detectionCache.set(key, output);
+  return output;
+}
+
+/**
+ * Optional AI description via Ollama. Call after detectLandingSite.
+ */
+export async function getAiDescription(
+  wp: Waypoint,
+  composite: CompositeResult,
+  onProgress: (message: string) => void,
+): Promise<string> {
+  const check = await checkOllamaConnection();
+  if (!check.ok) throw new Error(check.error || 'Cannot connect to Ollama');
+
   const base64 = composite.dataUrl.replace(/^data:image\/jpeg;base64,/, '');
-
   const ollamaUrl = getOllamaUrl();
   const model = getOllamaModel();
 
-  onProgress(`Analyzing with ${model}...`);
+  onProgress(`Getting AI description (${model})...`);
 
   const response = await fetch(`${ollamaUrl}/api/chat`, {
     method: 'POST',
@@ -237,13 +175,11 @@ export async function analyzeLandingSite(
     body: JSON.stringify({
       model,
       stream: true,
-      messages: [
-        {
-          role: 'user',
-          content: buildPrompt(wp, composite.metersPerPx, composite.totalWidthM),
-          images: [base64],
-        },
-      ],
+      messages: [{
+        role: 'user',
+        content: `Describe this satellite image of a potential glider landing field. What is the surface condition? Any hazards for landing? Rate suitability 1-5 (1=unusable, 5=excellent). Be brief.${wp.rwdir ? ` Known runway: ${wp.rwdir}°/${wp.rwlen}m.` : ''}`,
+        images: [base64],
+      }],
     }),
   });
 
@@ -252,44 +188,21 @@ export async function analyzeLandingSite(
     throw new Error(`Ollama error (${response.status}): ${body.slice(0, 200)}`);
   }
 
-  // Stream the response for live feedback
   let text = '';
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
-  let chunks = 0;
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    // Ollama streams newline-delimited JSON objects
-    for (const line of chunk.split('\n')) {
+    for (const line of decoder.decode(value, { stream: true }).split('\n')) {
       if (!line.trim()) continue;
       try {
         const obj = JSON.parse(line);
-        if (obj.message?.content) {
-          text += obj.message.content;
-          chunks++;
-          if (chunks % 5 === 0) {
-            // Show preview of response length
-            onProgress(`Analyzing... (${text.length} chars)`);
-          }
-        }
-      } catch {
-        // skip malformed lines
-      }
+        if (obj.message?.content) text += obj.message.content;
+      } catch { /* skip */ }
     }
   }
 
-  if (!text) {
-    throw new Error('No response content from Ollama');
-  }
-
-  const result = parseAnalysisResponse(text);
-  const output: AnalysisOutput = {
-    result,
-    pixelToLatLon: composite.pixelToLatLon,
-  };
-  outputCache.set(key, output);
-  return output;
+  return text || 'No description available.';
 }

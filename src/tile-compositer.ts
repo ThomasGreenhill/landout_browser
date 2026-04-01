@@ -28,9 +28,13 @@ function fetchTile(z: number, y: number, x: number): Promise<HTMLImageElement> {
 
 export interface CompositeResult {
   dataUrl: string;
+  /** The full-resolution canvas (before downscale) for CV analysis */
+  canvas: HTMLCanvasElement;
   metersPerPx: number;
   totalWidthM: number;
-  /** Convert pixel coordinates in the composite image to lat/lon */
+  /** Waypoint pixel position in the full-res canvas */
+  waypointPixel: { x: number; y: number };
+  /** Convert pixel coordinates in the full-res canvas to lat/lon */
   pixelToLatLon: (px: number, py: number) => { lat: number; lon: number };
 }
 
@@ -153,8 +157,10 @@ export async function compositeTiles(
 
   return {
     dataUrl,
+    canvas,
     metersPerPx: mpp,
     totalWidthM: canvasSize * mpp,
+    waypointPixel: { x: wpPixelX, y: wpPixelY },
     pixelToLatLon,
   };
 }

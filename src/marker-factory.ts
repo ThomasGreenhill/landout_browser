@@ -1,6 +1,6 @@
 import L from 'leaflet';
 import { Waypoint, WaypointStyle, HomeInfo } from './types';
-import { AnalysisResult } from './analysis-types';
+import { FieldDetection } from './field-detector';
 import { fmtElev, fmtShortDist, fmtDist } from './units';
 
 const STYLE_CONFIG: Record<number, { css: string; label: string; size: number }> = {
@@ -168,9 +168,9 @@ export function buildDetailPanelHtml(wp: Waypoint, index: number, homeInfo?: Hom
     html += `<div class="detail-desc">${escapeHtml(wp.desc)}</div>`;
   }
 
-  // Analysis section
+  // Detection section
   html += `<div class="detail-analysis-section">`;
-  html += `<button class="detail-analyze-btn" id="analyze-btn" data-wp-index="${index}">Analyze Landing Site</button>`;
+  html += `<button class="detail-analyze-btn" id="detect-btn" data-wp-index="${index}">Detect Field</button>`;
   html += `<div id="analysis-result"></div>`;
   html += `</div>`;
 
@@ -179,103 +179,47 @@ export function buildDetailPanelHtml(wp: Waypoint, index: number, homeInfo?: Hom
   return html;
 }
 
-const RATING_LABELS = ['', 'Unusable', 'Emergency only', 'Marginal', 'Good', 'Excellent'];
-const STARS = ['', '\u2605', '\u2605\u2605', '\u2605\u2605\u2605', '\u2605\u2605\u2605\u2605', '\u2605\u2605\u2605\u2605\u2605'];
-
-export function buildAnalysisResultHtml(result: AnalysisResult): string {
-  const r = result.suitability.rating;
-  const hasStructured = r > 0;
+export function buildDetectionResultHtml(det: FieldDetection, waypointIndex: number): string {
   let html = '';
 
-  if (hasStructured) {
-    // Rating
-    html += `<div class="analysis-rating analysis-rating-${r}">`;
-    html += `<span class="analysis-rating-stars">${STARS[r]}</span>`;
-    html += ` <span class="analysis-rating-label">${RATING_LABELS[r]}</span>`;
-    html += `<span class="analysis-rating-text">${escapeHtml(result.suitability.summary)}</span>`;
+  // Dimensions
+  html += `<div class="analysis-field">`;
+  html += `<div class="analysis-field-header">Detected Field</div>`;
+  html += `<div class="analysis-field-value">${fmtShortDist(det.lengthM)} &times; ${fmtShortDist(det.widthM)}</div>`;
+  html += `<div class="analysis-field-detail">Orientation: ${det.orientationDeg}&deg; &bull; Area: ${Math.round(det.areaSqM / 10000 * 10) / 10} ha</div>`;
+  html += `</div>`;
+
+  // Surface
+  html += `<div class="analysis-field">`;
+  html += `<div class="analysis-field-header">Surface</div>`;
+  html += `<div class="analysis-field-value">${formatSurface(det.surface)}</div>`;
+  html += `</div>`;
+
+  // Obstructions
+  if (det.obstructions.length > 0) {
+    html += `<div class="analysis-field">`;
+    html += `<div class="analysis-field-header">Perimeter Obstructions</div>`;
+    for (const obs of det.obstructions) {
+      html += `<div class="analysis-obstruction">`;
+      html += `<span class="obstruction-type">${formatSurface(obs.type)}</span>`;
+      html += `<span class="obstruction-detail">${obs.direction}</span>`;
+      html += `</div>`;
+    }
     html += `</div>`;
-
-    // Landable area
-    if (result.landableArea.lengthM > 0) {
-      html += `<div class="analysis-field">`;
-      html += `<div class="analysis-field-header">Landable Area</div>`;
-      html += `<div class="analysis-field-value">${fmtShortDist(result.landableArea.lengthM)} &times; ${fmtShortDist(result.landableArea.widthM)}</div>`;
-      html += `<div class="analysis-field-detail">Usable: ${fmtShortDist(result.landableArea.usableLengthM)} &bull; Orientation: ${result.landableArea.orientationDeg}&deg;</div>`;
-      html += `</div>`;
-    }
-
-    // Surface
-    if (result.surface.primary !== 'unknown') {
-      html += `<div class="analysis-field">`;
-      html += `<div class="analysis-field-header">Surface</div>`;
-      html += `<div class="analysis-field-value">${formatSurface(result.surface.primary)} `;
-      html += `<span class="analysis-confidence confidence-${result.surface.confidence}">${result.surface.confidence}</span></div>`;
-      if (result.surface.notes) {
-        html += `<div class="analysis-field-detail">${escapeHtml(result.surface.notes)}</div>`;
-      }
-      html += `</div>`;
-    }
-
-    // Obstructions
-    if (result.obstructions.length > 0) {
-      html += `<div class="analysis-field">`;
-      html += `<div class="analysis-field-header">Obstructions</div>`;
-      for (const obs of result.obstructions) {
-        html += `<div class="analysis-obstruction obstruction-severity-${obs.severity}">`;
-        html += `<span class="obstruction-type">${formatObstructionType(obs.type)}</span>`;
-        html += `<span class="obstruction-detail">${escapeHtml(obs.location)} &mdash; ${escapeHtml(obs.description)}</span>`;
-        html += `</div>`;
-      }
-      html += `</div>`;
-    }
-
-    // Approach
-    if (result.approach.bestDirection) {
-      html += `<div class="analysis-field">`;
-      html += `<div class="analysis-field-header">Approach</div>`;
-      html += `<div class="analysis-field-value">${escapeHtml(result.approach.bestDirection)}</div>`;
-      if (result.approach.hazards.length > 0) {
-        html += `<ul class="analysis-hazards">`;
-        for (const h of result.approach.hazards) {
-          html += `<li>${escapeHtml(h)}</li>`;
-        }
-        html += `</ul>`;
-      }
-      if (result.approach.notes) {
-        html += `<div class="analysis-field-detail">${escapeHtml(result.approach.notes)}</div>`;
-      }
-      html += `</div>`;
-    }
   }
 
-  // Always show raw response in a collapsible section
-  if (result.rawResponse) {
-    const label = hasStructured ? 'Full AI Response' : 'AI Analysis';
-    html += `<details class="analysis-raw" ${hasStructured ? '' : 'open'}>`;
-    html += `<summary class="analysis-raw-summary">${label}</summary>`;
-    html += `<div class="analysis-raw-text">${formatRawResponse(result.rawResponse)}</div>`;
-    html += `</details>`;
-  }
+  // AI description button (optional)
+  html += `<div style="margin-top:12px">`;
+  html += `<button class="detail-analyze-btn" id="ai-describe-btn" data-wp-index="${waypointIndex}" style="background:#6b7280;font-size:12px;padding:6px 12px">Get AI Description (Ollama)</button>`;
+  html += `<div id="ai-description"></div>`;
+  html += `</div>`;
 
   html += `<div class="analysis-key-link"><a href="#" id="change-ollama-settings">Ollama Settings</a></div>`;
   return html;
 }
 
-function formatRawResponse(text: string): string {
-  // Convert markdown-like formatting to HTML
-  return escapeHtml(text)
-    .replace(/\n\n/g, '</p><p>')
-    .replace(/\n/g, '<br>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/```[\s\S]*?```/g, '<span style="opacity:0.4">[json data]</span>');
-}
-
 function formatSurface(s: string): string {
   return s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function formatObstructionType(t: string): string {
-  return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function escapeHtml(s: string): string {

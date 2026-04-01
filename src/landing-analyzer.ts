@@ -6,7 +6,7 @@ import { getStyleConfig } from './marker-factory';
 const OLLAMA_URL_KEY = 'landout-ollama-url';
 const OLLAMA_MODEL_KEY = 'landout-ollama-model';
 const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
-const DEFAULT_OLLAMA_MODEL = 'moondream';
+const DEFAULT_OLLAMA_MODEL = 'gemma3:4b';
 
 
 export function getOllamaUrl(): string {

@@ -6,6 +6,7 @@ import { MapManager } from './map-manager';
 import { createMarkerIcon, buildTooltipText, buildDetailPanelHtml, buildDetectionResultHtml, getStyleConfig } from './marker-factory';
 import { fetchTilesForWaypoint, runDetection, getAiDescription, promptForSettings, DetectionOutput, CompositeResult } from './landing-analyzer';
 import { fmtShortDist, getUnitSystem, setUnitSystem, UnitSystem, distSliderUnit, kmToSliderVal, sliderValToKm } from './units';
+import { getElevationProfile } from './terrain';
 
 function formatAiText(text: string): string {
   return text
@@ -187,15 +188,10 @@ export class UIController {
         this.pendingComposite = { waypointIndex, composite };
       }
 
-      // If this is a known airfield with runway data, detect immediately
-      if (wp.rwdir > 0 && wp.rwlen > 0) {
-        this.executeDetection(wp, composite, wp.lat, wp.lon, waypointIndex);
-        return;
-      }
-
-      // For outlandings: prompt user to click on the landing surface
+      // Prompt user to click on the landing surface center
+      const hasRunway = wp.rwdir > 0 && wp.rwlen > 0;
       if (detectBtn) { detectBtn.disabled = true; detectBtn.textContent = 'Click on the landing surface...'; }
-      container.innerHTML = '<div class="analysis-field"><div class="analysis-field-header">Click on the landing surface</div><div class="analysis-field-detail">Click directly on the field/strip you want to analyze. The detection will use that point as the seed.</div></div>';
+      container.innerHTML = `<div class="analysis-field"><div class="analysis-field-header">Click on the center of the landing surface</div><div class="analysis-field-detail">${hasRunway ? 'Click the runway center — we have direction/length from the file but need the exact position.' : 'Click directly on the field/strip you want to analyze.'}</div></div>`;
 
       // Change cursor
       this.mapManager.map.getContainer().style.cursor = 'crosshair';
@@ -240,6 +236,39 @@ export class UIController {
         this.drawDetectionOverlays(this.lastDetectionOutput);
       } catch (e) {
         console.warn('Overlay drawing failed:', e);
+      }
+
+      // Fetch terrain profile async and update the panel
+      if (detection.lengthM > 30) {
+        const terrainEl = document.getElementById('terrain-profile');
+        if (terrainEl) {
+          terrainEl.innerHTML = '<span style="color:rgba(255,255,255,0.4);font-size:11px">Loading terrain...</span>';
+          // Use the detection center pixel → lat/lon for the profile center
+          const center = composite.pixelToLatLon(detection.centerPixel.x, detection.centerPixel.y);
+          getElevationProfile(center.lat, center.lon, detection.orientationDeg, detection.lengthM)
+            .then((profile) => {
+              let html = `<div class="analysis-field-value">${profile.avgSlopePercent}% avg slope, ${profile.maxSlopePercent}% max</div>`;
+              if (!profile.isFlat) {
+                html += `<div class="analysis-error" style="margin-top:2px">&#9888; Terrain may be too sloped (&gt;3%)</div>`;
+              } else {
+                html += `<div class="analysis-field-detail" style="color:#22c55e">Terrain is flat enough for landing</div>`;
+              }
+              // Mini elevation chart
+              const elevs = profile.samples.map(s => s.elevM);
+              const minE = Math.min(...elevs), maxE = Math.max(...elevs);
+              const range = Math.max(maxE - minE, 1);
+              const barHtml = elevs.map(e => {
+                const h = Math.round(((e - minE) / range) * 30 + 2);
+                return `<div style="width:${Math.floor(100 / elevs.length)}%;height:${h}px;background:#3b82f6;border-radius:1px"></div>`;
+              }).join('');
+              html += `<div style="display:flex;align-items:end;gap:1px;height:34px;margin-top:6px">${barHtml}</div>`;
+              html += `<div class="analysis-field-detail">${Math.round(minE)}m — ${Math.round(maxE)}m elev (${Math.round(maxE - minE)}m range)</div>`;
+              terrainEl.innerHTML = html;
+            })
+            .catch(() => {
+              terrainEl.innerHTML = '<span style="color:rgba(255,255,255,0.3);font-size:11px">Terrain data unavailable</span>';
+            });
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Detection failed';

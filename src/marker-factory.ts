@@ -200,6 +200,12 @@ export function buildDetectionResultHtml(det: FieldDetection, waypointIndex: num
   html += `<div class="analysis-field-value">${formatSurface(det.surface)}</div>`;
   html += `</div>`;
 
+  // Terrain profile (populated async after detection)
+  html += `<div class="analysis-field">`;
+  html += `<div class="analysis-field-header">Terrain Profile</div>`;
+  html += `<div id="terrain-profile"><span style="color:rgba(255,255,255,0.4);font-size:11px">Loading terrain...</span></div>`;
+  html += `</div>`;
+
   // Obstructions
   if (det.obstructions.length > 0) {
     html += `<div class="analysis-field">`;

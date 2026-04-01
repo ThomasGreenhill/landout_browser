@@ -118,42 +118,50 @@ export interface DetectionOutput {
   composite: CompositeResult;
 }
 
-const detectionCache = new Map<string, DetectionOutput>();
+export type { CompositeResult };
 
-function cacheKey(lat: number, lon: number): string {
-  return `${lat.toFixed(5)},${lon.toFixed(5)}`;
+/**
+ * Fetch tiles for a waypoint. Returns composite for detection.
+ */
+export async function fetchTilesForWaypoint(
+  wp: Waypoint,
+  onProgress: (message: string) => void,
+): Promise<CompositeResult> {
+  onProgress('Fetching satellite tiles...');
+  return compositeTiles(wp.lat, wp.lon, 17, 3);
 }
 
 /**
- * Instant field detection using client-side computer vision.
- * No AI needed — runs in ~100ms.
+ * Run field detection on a composite image with a specific seed point.
+ * The seed is where the user clicked on the landing surface.
  */
-export async function detectLandingSite(
+export function runDetection(
   wp: Waypoint,
-  onProgress: (message: string) => void,
-): Promise<DetectionOutput> {
-  const key = cacheKey(wp.lat, wp.lon);
-  const cached = detectionCache.get(key);
-  if (cached) return cached;
+  composite: CompositeResult,
+  seedLat: number,
+  seedLon: number,
+): FieldDetection {
+  // Convert seed lat/lon to pixel coords in the canvas
+  // Use the inverse of pixelToLatLon — we need to search for the closest match
+  // Actually, we can compute it directly from the tile math
+  const { canvas, metersPerPx } = composite;
 
-  onProgress('Fetching satellite tiles...');
-  const composite = await compositeTiles(wp.lat, wp.lon, 17, 3);
+  // Approximate pixel position: offset from waypoint center in meters, then to pixels
+  const R = 6371000;
+  const dLat = (seedLat - wp.lat) * Math.PI / 180;
+  const dLon = (seedLon - wp.lon) * Math.PI / 180;
+  const latRad = (wp.lat * Math.PI) / 180;
+  const dy = dLat * R; // meters north
+  const dx = dLon * R * Math.cos(latRad); // meters east
 
-  onProgress('Detecting field...');
+  const seedPx = composite.waypointPixel.x + dx / metersPerPx;
+  const seedPy = composite.waypointPixel.y - dy / metersPerPx; // y is inverted (north = up = -y)
+
   const runway = (wp.rwdir > 0 && wp.rwlen > 0)
     ? { rwdir: wp.rwdir, rwlen: wp.rwlen, rwwidth: wp.rwwidth }
     : undefined;
-  const detection = detectField(
-    composite.canvas,
-    composite.waypointPixel.x,
-    composite.waypointPixel.y,
-    composite.metersPerPx,
-    runway,
-  );
 
-  const output: DetectionOutput = { detection, composite };
-  detectionCache.set(key, output);
-  return output;
+  return detectField(canvas, seedPx, seedPy, metersPerPx, runway);
 }
 
 /**

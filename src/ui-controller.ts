@@ -4,7 +4,7 @@ import { parseCupFile } from './cup-parser';
 import { haversineDistance, bearing, cardinalDirection } from './geo-utils';
 import { MapManager } from './map-manager';
 import { createMarkerIcon, buildTooltipText, buildDetailPanelHtml, buildDetectionResultHtml, getStyleConfig } from './marker-factory';
-import { detectLandingSite, getAiDescription, promptForSettings, DetectionOutput } from './landing-analyzer';
+import { fetchTilesForWaypoint, runDetection, getAiDescription, promptForSettings, DetectionOutput, CompositeResult } from './landing-analyzer';
 import { fmtShortDist, getUnitSystem, setUnitSystem, UnitSystem, distSliderUnit, kmToSliderVal, sliderValToKm } from './units';
 
 function formatAiText(text: string): string {
@@ -28,6 +28,8 @@ export class UIController {
   private maxDistanceKm = Infinity;
   private savedView: { center: L.LatLng; zoom: number } | null = null;
   private lastDetectionOutput: DetectionOutput | null = null;
+  private pendingComposite: { waypointIndex: number; composite: CompositeResult } | null = null;
+  private seedClickHandler: ((e: L.LeafletMouseEvent) => void) | null = null;
 
   private readonly overlay: HTMLElement;
   private readonly toolbar: HTMLElement;
@@ -147,10 +149,12 @@ export class UIController {
   }
 
   private exitDetailMode(): void {
+    this.clearSeedHandler();
     this.detailPanel.classList.add('hidden');
     this.toolbar.classList.add('visible');
     this.mapManager.detailLayer.clearLayers();
     this.lastDetectionOutput = null;
+    this.pendingComposite = null;
 
     if (this.savedView) {
       this.mapManager.map.setView(this.savedView.center, this.savedView.zoom, { animate: true });
@@ -158,10 +162,67 @@ export class UIController {
     }
   }
 
-  // --- Field detection (instant, CV-based) ---
+  // --- Field detection (click-to-seed) ---
 
   private async runDetection(waypointIndex: number): Promise<void> {
     const wp = this.waypoints[waypointIndex];
+    const detectBtn = document.getElementById('detect-btn') as HTMLButtonElement | null;
+    const container = document.getElementById('analysis-result')!;
+
+    // Clean up any previous seed click handler
+    this.clearSeedHandler();
+
+    if (detectBtn) { detectBtn.disabled = true; detectBtn.textContent = 'Fetching tiles...'; }
+    container.innerHTML = '<div class="analysis-spinner"></div>';
+
+    try {
+      // Fetch tiles (or reuse if already fetched for this waypoint)
+      let composite: CompositeResult;
+      if (this.pendingComposite && this.pendingComposite.waypointIndex === waypointIndex) {
+        composite = this.pendingComposite.composite;
+      } else {
+        composite = await fetchTilesForWaypoint(wp, (msg) => {
+          if (detectBtn) detectBtn.textContent = msg;
+        });
+        this.pendingComposite = { waypointIndex, composite };
+      }
+
+      // If this is a known airfield with runway data, detect immediately
+      if (wp.rwdir > 0 && wp.rwlen > 0) {
+        this.executeDetection(wp, composite, wp.lat, wp.lon, waypointIndex);
+        return;
+      }
+
+      // For outlandings: prompt user to click on the landing surface
+      if (detectBtn) { detectBtn.disabled = true; detectBtn.textContent = 'Click on the landing surface...'; }
+      container.innerHTML = '<div class="analysis-field"><div class="analysis-field-header">Click on the landing surface</div><div class="analysis-field-detail">Click directly on the field/strip you want to analyze. The detection will use that point as the seed.</div></div>';
+
+      // Change cursor
+      this.mapManager.map.getContainer().style.cursor = 'crosshair';
+
+      // Wait for click on map
+      this.seedClickHandler = (e: L.LeafletMouseEvent) => {
+        this.clearSeedHandler();
+        this.executeDetection(wp, composite, e.latlng.lat, e.latlng.lng, waypointIndex);
+      };
+      this.mapManager.map.once('click', this.seedClickHandler);
+
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Detection failed';
+      container.innerHTML = `<div class="analysis-error">${msg}</div>`;
+      if (detectBtn) { detectBtn.disabled = false; detectBtn.textContent = 'Detect Field'; }
+    }
+  }
+
+  private clearSeedHandler(): void {
+    if (this.seedClickHandler) {
+      this.mapManager.map.off('click', this.seedClickHandler);
+      this.seedClickHandler = null;
+    }
+    this.mapManager.map.getContainer().style.cursor = '';
+  }
+
+  private executeDetection(wp: Waypoint, composite: CompositeResult, seedLat: number, seedLon: number, waypointIndex: number): void {
     const detectBtn = document.getElementById('detect-btn') as HTMLButtonElement | null;
     const container = document.getElementById('analysis-result')!;
 
@@ -169,16 +230,14 @@ export class UIController {
     container.innerHTML = '<div class="analysis-spinner"></div>';
 
     try {
-      const output = await detectLandingSite(wp, (msg) => {
-        if (detectBtn) detectBtn.textContent = msg;
-      });
-      this.lastDetectionOutput = output;
+      const detection = runDetection(wp, composite, seedLat, seedLon);
+      this.lastDetectionOutput = { detection, composite };
 
-      container.innerHTML = buildDetectionResultHtml(output.detection, waypointIndex);
-      if (detectBtn) { detectBtn.disabled = false; detectBtn.textContent = 'Re-detect'; }
+      container.innerHTML = buildDetectionResultHtml(detection, waypointIndex);
+      if (detectBtn) { detectBtn.disabled = false; detectBtn.textContent = 'Re-detect (click new seed)'; }
 
       try {
-        this.drawDetectionOverlays(output);
+        this.drawDetectionOverlays(this.lastDetectionOutput);
       } catch (e) {
         console.warn('Overlay drawing failed:', e);
       }

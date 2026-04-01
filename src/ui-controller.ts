@@ -1,11 +1,11 @@
 import L from 'leaflet';
 import { Waypoint, WaypointStyle, HomeInfo } from './types';
-import { AnalysisState, AnalysisResult, PixelPoint } from './analysis-types';
+import { AnalysisState, AnalysisResult } from './analysis-types';
 import { parseCupFile } from './cup-parser';
 import { haversineDistance, bearing, cardinalDirection } from './geo-utils';
 import { MapManager } from './map-manager';
 import { createMarkerIcon, buildTooltipText, buildDetailPanelHtml, buildAnalysisResultHtml, getStyleConfig } from './marker-factory';
-import { analyzeLandingSite, promptForSettings, AnalysisOutput } from './landing-analyzer';
+import { analyzeLandingSite, promptForSettings } from './landing-analyzer';
 
 interface MarkerEntry {
   marker: L.Marker;
@@ -159,127 +159,161 @@ export class UIController {
         this.updateAnalysisUI({ status: 'loading', message });
       });
       this.updateAnalysisUI({ status: 'success', result: output.result });
-      this.drawAnalysisOverlays(output);
+      this.drawAnalysisOverlays(wp, output.result);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Analysis failed';
       this.updateAnalysisUI({ status: 'error', error: message });
     }
   }
 
-  private drawAnalysisOverlays(output: AnalysisOutput): void {
-    const { result, pixelToLatLon } = output;
-    // Keep existing layers (e.g. home line), add analysis overlays
-    const layer = this.mapManager.detailLayer;
+  /**
+   * Compute a lat/lon offset from a center point given distance in meters and bearing in degrees.
+   */
+  private offsetLatLon(
+    lat: number, lon: number, distM: number, bearingDeg: number,
+  ): L.LatLngTuple {
+    const R = 6371000;
+    const brng = (bearingDeg * Math.PI) / 180;
+    const latR = (lat * Math.PI) / 180;
+    const lonR = (lon * Math.PI) / 180;
+    const d = distM / R;
+    const lat2 = Math.asin(
+      Math.sin(latR) * Math.cos(d) + Math.cos(latR) * Math.sin(d) * Math.cos(brng),
+    );
+    const lon2 = lonR + Math.atan2(
+      Math.sin(brng) * Math.sin(d) * Math.cos(latR),
+      Math.cos(d) - Math.sin(latR) * Math.sin(lat2),
+    );
+    return [(lat2 * 180) / Math.PI, (lon2 * 180) / Math.PI];
+  }
 
-    // Draw landing area polygon
-    const corners = result.landableArea.corners;
-    if (corners && corners.length >= 3) {
-      const latlngs = corners.map((c) => {
-        const p = pixelToLatLon(c.x, c.y);
-        return [p.lat, p.lon] as L.LatLngTuple;
-      });
-      // Close the polygon
-      const polygon = L.polygon(latlngs, {
+  private drawAnalysisOverlays(wp: Waypoint, result: AnalysisResult): void {
+    const layer = this.mapManager.detailLayer;
+    const area = result.landableArea;
+
+    // Only draw if we have meaningful dimensions
+    if (area.lengthM > 0 && area.widthM > 0) {
+      const orient = area.orientationDeg;
+      const halfLen = area.lengthM / 2;
+      const halfWid = area.widthM / 2;
+
+      // Compute 4 corners from center + orientation + dimensions
+      // Runway axis is along orientationDeg; perpendicular is orient+90
+      const c1 = this.offsetLatLon(wp.lat, wp.lon, halfLen, orient);
+      const c2 = this.offsetLatLon(wp.lat, wp.lon, halfLen, (orient + 180) % 360);
+
+      const corner1 = this.offsetLatLon(c1[0], c1[1], halfWid, (orient + 90) % 360);
+      const corner2 = this.offsetLatLon(c1[0], c1[1], halfWid, (orient + 270) % 360);
+      const corner3 = this.offsetLatLon(c2[0], c2[1], halfWid, (orient + 270) % 360);
+      const corner4 = this.offsetLatLon(c2[0], c2[1], halfWid, (orient + 90) % 360);
+
+      // Field polygon
+      const polygon = L.polygon([corner1, corner2, corner3, corner4], {
         color: '#22c55e',
         weight: 2,
         fillColor: '#22c55e',
-        fillOpacity: 0.15,
+        fillOpacity: 0.12,
         dashArray: '6, 4',
       });
       layer.addLayer(polygon);
 
-      // Draw tape-measure lines for length and width
-      if (corners.length === 4) {
-        this.drawTapeMeasure(layer, corners, pixelToLatLon, result);
-      }
-    }
+      // Length tape measure (along runway axis)
+      this.drawTapeLine(layer, c1, c2, `${area.lengthM}m`, '#3b82f6');
 
-    // Draw obstruction markers
-    for (const obs of result.obstructions) {
-      if (obs.pixelPos && obs.pixelPos.x > 0 && obs.pixelPos.y > 0) {
-        const p = pixelToLatLon(obs.pixelPos.x, obs.pixelPos.y);
-        const severityColor =
-          obs.severity === 'critical' ? '#ef4444' :
-          obs.severity === 'moderate' ? '#f59e0b' : '#94a3b8';
-        const icon = L.divIcon({
-          className: 'obstruction-map-icon',
-          html: `<div class="obs-marker" style="background:${severityColor}">
-            <span class="obs-marker-label">${this.obstructionIcon(obs.type)}</span>
-          </div>`,
-          iconSize: [22, 22],
-          iconAnchor: [11, 11],
+      // Width tape measure (perpendicular, at center)
+      const w1 = this.offsetLatLon(wp.lat, wp.lon, halfWid, (orient + 90) % 360);
+      const w2 = this.offsetLatLon(wp.lat, wp.lon, halfWid, (orient + 270) % 360);
+      this.drawTapeLine(layer, w1, w2, `${area.widthM}m`, '#f59e0b');
+
+      // Usable length indicator (if different from total)
+      if (area.usableLengthM > 0 && area.usableLengthM < area.lengthM) {
+        const halfUsable = area.usableLengthM / 2;
+        const u1 = this.offsetLatLon(wp.lat, wp.lon, halfUsable, orient);
+        const u2 = this.offsetLatLon(wp.lat, wp.lon, halfUsable, (orient + 180) % 360);
+        const usableLine = L.polyline([u1, u2], {
+          color: '#22c55e',
+          weight: 4,
+          opacity: 0.8,
         });
-        const marker = L.marker([p.lat, p.lon], { icon, interactive: true });
-        marker.bindTooltip(
-          `<b>${obs.type.replace(/_/g, ' ')}</b><br>${obs.description}`,
-          { direction: 'top', offset: [0, -12] },
-        );
-        layer.addLayer(marker);
+        layer.addLayer(usableLine);
       }
     }
-  }
 
-  private drawTapeMeasure(
-    layer: L.LayerGroup,
-    corners: PixelPoint[],
-    pixelToLatLon: (px: number, py: number) => { lat: number; lon: number },
-    result: AnalysisResult,
-  ): void {
-    // Corners are typically ordered: 0-1 is one side, 1-2 is adjacent side
-    // Find the two longest edges to determine length vs width
-    const edges: Array<{ from: number; to: number; dist: number }> = [];
-    for (let i = 0; i < 4; i++) {
-      const j = (i + 1) % 4;
-      const dx = corners[j].x - corners[i].x;
-      const dy = corners[j].y - corners[i].y;
-      edges.push({ from: i, to: j, dist: Math.sqrt(dx * dx + dy * dy) });
+    // Obstruction markers — place around the field perimeter based on location text
+    const obsByIndex = result.obstructions.map((obs, i) => ({ obs, angle: this.locationToAngle(obs.location, i, result.obstructions.length) }));
+    for (const { obs, angle } of obsByIndex) {
+      // Place obstructions at ~field edge distance from center
+      const dist = Math.max(area.lengthM, area.widthM, 200) * 0.55;
+      const pos = this.offsetLatLon(wp.lat, wp.lon, dist, angle);
+      const severityColor =
+        obs.severity === 'critical' ? '#ef4444' :
+        obs.severity === 'moderate' ? '#f59e0b' : '#94a3b8';
+      const icon = L.divIcon({
+        className: 'obstruction-map-icon',
+        html: `<div class="obs-marker" style="background:${severityColor}">
+          <span class="obs-marker-label">${this.obstructionIcon(obs.type)}</span>
+        </div>`,
+        iconSize: [26, 26],
+        iconAnchor: [13, 13],
+      });
+      const marker = L.marker(pos, { icon, interactive: true });
+      marker.bindTooltip(
+        `<b>${obs.type.replace(/_/g, ' ')}</b> (${obs.severity})<br>${obs.description}<br><i>${obs.location}</i>`,
+        { direction: 'top', offset: [0, -14] },
+      );
+      layer.addLayer(marker);
     }
-    edges.sort((a, b) => b.dist - a.dist);
-
-    // Longest edge pair = length, shorter pair = width
-    const lengthEdge = edges[0];
-    const widthEdge = edges.find(e =>
-      e.from !== lengthEdge.from && e.to !== lengthEdge.from &&
-      e.from !== lengthEdge.to && e.to !== lengthEdge.to
-    ) || edges[2];
-
-    // Draw length tape
-    this.drawSingleTape(layer, corners[lengthEdge.from], corners[lengthEdge.to],
-      `${result.landableArea.lengthM}m`, '#3b82f6', pixelToLatLon);
-
-    // Draw width tape
-    this.drawSingleTape(layer, corners[widthEdge.from], corners[widthEdge.to],
-      `${result.landableArea.widthM}m`, '#f59e0b', pixelToLatLon);
   }
 
-  private drawSingleTape(
+  private drawTapeLine(
     layer: L.LayerGroup,
-    from: PixelPoint, to: PixelPoint,
+    from: L.LatLngTuple, to: L.LatLngTuple,
     label: string, color: string,
-    pixelToLatLon: (px: number, py: number) => { lat: number; lon: number },
   ): void {
-    const p1 = pixelToLatLon(from.x, from.y);
-    const p2 = pixelToLatLon(to.x, to.y);
+    // Main line
+    layer.addLayer(L.polyline([from, to], { color, weight: 2, opacity: 0.9 }));
 
-    // The measurement line
-    const line = L.polyline(
-      [[p1.lat, p1.lon], [p2.lat, p2.lon]],
-      { color, weight: 2, opacity: 0.9 },
-    );
-    layer.addLayer(line);
+    // End tick marks (perpendicular short lines)
+    const tickLen = 8; // meters
+    const dx = to[1] - from[1];
+    const dy = to[0] - from[0];
+    const ang = (Math.atan2(dx, dy) * 180) / Math.PI;
+    const perpA = (ang + 90) % 360;
+    const perpB = (ang + 270) % 360;
 
-    // End caps (perpendicular ticks) — draw as small offset markers
-    const midLat = (p1.lat + p2.lat) / 2;
-    const midLon = (p1.lon + p2.lon) / 2;
+    for (const end of [from, to]) {
+      const t1 = this.offsetLatLon(end[0], end[1], tickLen, perpA);
+      const t2 = this.offsetLatLon(end[0], end[1], tickLen, perpB);
+      layer.addLayer(L.polyline([t1, t2], { color, weight: 2, opacity: 0.9 }));
+    }
 
+    // Label at midpoint
+    const midLat = (from[0] + to[0]) / 2;
+    const midLon = (from[1] + to[1]) / 2;
     const labelIcon = L.divIcon({
       className: 'tape-label-icon',
       html: `<div class="tape-label" style="background:${color}">${label}</div>`,
-      iconSize: [60, 20],
-      iconAnchor: [30, 10],
+      iconSize: [70, 22],
+      iconAnchor: [35, 11],
     });
-    const labelMarker = L.marker([midLat, midLon], { icon: labelIcon, interactive: false });
-    layer.addLayer(labelMarker);
+    layer.addLayer(L.marker([midLat, midLon], { icon: labelIcon, interactive: false }));
+  }
+
+  /**
+   * Convert a location description like "northern boundary" to a compass angle from center.
+   */
+  private locationToAngle(location: string, index: number, total: number): number {
+    const loc = location.toLowerCase();
+    if (loc.includes('north') && loc.includes('east')) return 45;
+    if (loc.includes('north') && loc.includes('west')) return 315;
+    if (loc.includes('south') && loc.includes('east')) return 135;
+    if (loc.includes('south') && loc.includes('west')) return 225;
+    if (loc.includes('north')) return 0;
+    if (loc.includes('south')) return 180;
+    if (loc.includes('east')) return 90;
+    if (loc.includes('west')) return 270;
+    // Fallback: distribute evenly around the field
+    return (index / total) * 360;
   }
 
   private obstructionIcon(type: string): string {

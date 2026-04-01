@@ -227,6 +227,77 @@ html, body {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
 
+/* Measure distance tool */
+.measure-point-icon {
+  background: none !important;
+  border: none !important;
+}
+
+.measure-point {
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border: 2px solid #3b82f6;
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.measure-segment-label {
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.measure-total-icon {
+  background: none !important;
+  border: none !important;
+}
+
+.measure-total-label {
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  background: #3b82f6;
+  padding: 4px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  line-height: 1.3;
+}
+
+.measure-hint-small {
+  font-size: 9px;
+  font-weight: 400;
+  opacity: 0.7;
+}
+
+#measure-hint {
+  display: none;
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+#measure-hint.visible {
+  display: block;
+}
+
 /* Popup styles */
 .landout-popup .leaflet-popup-content-wrapper {
   border-radius: 10px;

@@ -14,15 +14,63 @@ export function getStyleConfig(style: WaypointStyle) {
   return STYLE_CONFIG[style] ?? STYLE_CONFIG[WaypointStyle.Unknown];
 }
 
+// SVG icons for each waypoint type — aviation-style symbols
+const MARKER_SVGS: Record<number, string> = {
+  // Grass airfield: circle with green grass runway stripe
+  [WaypointStyle.GrassAirfield]: `
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="12" cy="12" r="11" fill="#22c55e" stroke="#fff" stroke-width="1.5"/>
+      <rect x="10" y="3" width="4" height="18" rx="1.5" fill="#fff" opacity="0.9"/>
+      <line x1="8" y1="6" x2="16" y2="6" stroke="#fff" stroke-width="1.2" opacity="0.7"/>
+      <line x1="8" y1="18" x2="16" y2="18" stroke="#fff" stroke-width="1.2" opacity="0.7"/>
+    </svg>`,
+  // Outlanding: orange diamond with field lines
+  [WaypointStyle.Outlanding]: `
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <rect x="4" y="4" width="16" height="16" rx="2" transform="rotate(45 12 12)" fill="#f59e0b" stroke="#fff" stroke-width="1.5"/>
+      <line x1="8" y1="12" x2="16" y2="12" stroke="#fff" stroke-width="1.5" opacity="0.85"/>
+      <line x1="12" y1="8" x2="12" y2="16" stroke="#fff" stroke-width="1.5" opacity="0.85"/>
+    </svg>`,
+  // Gliding airfield: blue circle with glider silhouette
+  [WaypointStyle.GlidingAirfield]: `
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="12" cy="12" r="11" fill="#3b82f6" stroke="#fff" stroke-width="1.5"/>
+      <path d="M12 4 L12 20 M4 11 L20 11 Q12 14 12 14 Q12 14 4 11 Z" fill="#fff" opacity="0.9"/>
+      <path d="M10 18 L14 18 L12 20 Z" fill="#fff" opacity="0.9"/>
+    </svg>`,
+  // Paved airfield: gray circle with runway + threshold marks
+  [WaypointStyle.PavedAirfield]: `
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="12" cy="12" r="11" fill="#6b7280" stroke="#fff" stroke-width="1.5"/>
+      <rect x="10" y="3" width="4" height="18" rx="0.5" fill="#fff" opacity="0.9"/>
+      <line x1="10.5" y1="5" x2="13.5" y2="5" stroke="#6b7280" stroke-width="0.8"/>
+      <line x1="10.5" y1="6.5" x2="13.5" y2="6.5" stroke="#6b7280" stroke-width="0.8"/>
+      <line x1="10.5" y1="17.5" x2="13.5" y2="17.5" stroke="#6b7280" stroke-width="0.8"/>
+      <line x1="10.5" y1="19" x2="13.5" y2="19" stroke="#6b7280" stroke-width="0.8"/>
+      <line x1="11.8" y1="9" x2="11.8" y2="15" stroke="#6b7280" stroke-width="0.6" stroke-dasharray="1.5 1"/>
+    </svg>`,
+  // Unknown/waypoint: small purple pin
+  [WaypointStyle.Unknown]: `
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="12" cy="12" r="8" fill="#a855f7" stroke="#fff" stroke-width="1.5"/>
+      <circle cx="12" cy="12" r="3" fill="#fff" opacity="0.8"/>
+    </svg>`,
+};
+
+// Home marker: red circle with house icon
+const HOME_SVG = `
+  <svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="14" cy="14" r="13" fill="#ef4444" stroke="#fbbf24" stroke-width="2"/>
+    <path d="M14 6 L6 14 L9 14 L9 21 L12 21 L12 17 L16 17 L16 21 L19 21 L19 14 L22 14 Z" fill="#fff" opacity="0.95"/>
+  </svg>`;
+
 export function createMarkerIcon(style: WaypointStyle, isHome = false): L.DivIcon {
-  const config = getStyleConfig(style);
-  const size = isHome ? 28 : config.size;
-  const css = isHome ? 'marker-icon marker-home' : `marker-icon ${config.css}`;
-  const inner = isHome ? '&#8962;' : '';
+  const size = isHome ? 28 : 24;
+  const svg = isHome ? HOME_SVG : (MARKER_SVGS[style] ?? MARKER_SVGS[WaypointStyle.Unknown]);
 
   return L.divIcon({
-    className: '',
-    html: `<div class="${css}" style="width:${size}px;height:${size}px">${inner}</div>`,
+    className: 'marker-svg-icon',
+    html: svg,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
     popupAnchor: [0, -size / 2],

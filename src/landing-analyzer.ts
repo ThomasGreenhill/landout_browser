@@ -1,6 +1,6 @@
 import { Waypoint } from './types';
 import { compositeTiles, CompositeResult } from './tile-compositer';
-import { FieldDetection, buildRunwayRect, computeStripFromEndpoints } from './field-detector';
+import { FieldDetection, computeStripFromEndpoints } from './field-detector';
 
 // --- Ollama settings ---
 
@@ -138,18 +138,28 @@ export function detectFromRunwayData(
   centerLat: number,
   centerLon: number,
 ): FieldDetection {
-  const { metersPerPx } = composite;
-
-  // Convert click lat/lon to pixel using proper Mercator projection
-  const { x: cx, y: cy } = composite.latLonToPixel(centerLat, centerLon);
-
   const widthM = wp.rwwidth || Math.max(wp.rwlen * 0.04, 15);
-  const corners = buildRunwayRect(cx, cy, wp.rwdir, wp.rwlen, wp.rwwidth, metersPerPx);
   const orientDeg = wp.rwdir > 180 ? wp.rwdir - 180 : wp.rwdir;
 
+  // Build corners in lat/lon space using geodesic offsets, then convert to pixels
+  const halfLen = wp.rwlen / 2;
+  const halfWid = widthM / 2;
+  const e1 = offsetLatLon(centerLat, centerLon, halfLen, wp.rwdir);
+  const e2 = offsetLatLon(centerLat, centerLon, halfLen, (wp.rwdir + 180) % 360);
+  const c1 = offsetLatLon(e1[0], e1[1], halfWid, (wp.rwdir + 90) % 360);
+  const c2 = offsetLatLon(e1[0], e1[1], halfWid, (wp.rwdir + 270) % 360);
+  const c3 = offsetLatLon(e2[0], e2[1], halfWid, (wp.rwdir + 270) % 360);
+  const c4 = offsetLatLon(e2[0], e2[1], halfWid, (wp.rwdir + 90) % 360);
+
+  const cornerLatLons = [c1, c2, c3, c4];
+  const cornerPixels = cornerLatLons.map(c => composite.latLonToPixel(c[0], c[1]));
+  const centerPx = composite.latLonToPixel(centerLat, centerLon);
+
   return {
-    boundaryPixels: corners,
-    centerPixel: { x: cx, y: cy },
+    boundaryPixels: cornerPixels,
+    centerPixel: centerPx,
+    endpoint1: { lat: e1[0], lon: e1[1] },
+    endpoint2: { lat: e2[0], lon: e2[1] },
     lengthM: wp.rwlen,
     widthM: Math.round(widthM),
     orientationDeg: orientDeg,
@@ -158,6 +168,17 @@ export function detectFromRunwayData(
     fieldPixelCount: 0,
     areaSqM: Math.round(wp.rwlen * widthM),
   };
+}
+
+function offsetLatLon(lat: number, lon: number, distM: number, bearingDeg: number): [number, number] {
+  const R = 6371000;
+  const brng = (bearingDeg * Math.PI) / 180;
+  const latR = (lat * Math.PI) / 180;
+  const lonR = (lon * Math.PI) / 180;
+  const d = distM / R;
+  const lat2 = Math.asin(Math.sin(latR) * Math.cos(d) + Math.cos(latR) * Math.sin(d) * Math.cos(brng));
+  const lon2 = lonR + Math.atan2(Math.sin(brng) * Math.sin(d) * Math.cos(latR), Math.cos(d) - Math.sin(latR) * Math.sin(lat2));
+  return [(lat2 * 180) / Math.PI, (lon2 * 180) / Math.PI];
 }
 
 // --- Detection from two endpoints (user-drawn) ---

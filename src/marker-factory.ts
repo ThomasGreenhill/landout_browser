@@ -183,10 +183,15 @@ export function buildDetectionResultHtml(det: FieldDetection, waypointIndex: num
   let html = '';
 
   // Dimensions
+  const MIN_LENGTH_M = 305; // 1000 ft
+  const tooShort = det.lengthM > 0 && det.lengthM < MIN_LENGTH_M;
   html += `<div class="analysis-field">`;
-  html += `<div class="analysis-field-header">Detected Field</div>`;
+  html += `<div class="analysis-field-header">Detected Landing Strip</div>`;
   html += `<div class="analysis-field-value">${fmtShortDist(det.lengthM)} &times; ${fmtShortDist(det.widthM)}</div>`;
   html += `<div class="analysis-field-detail">Orientation: ${det.orientationDeg}&deg; &bull; Area: ${Math.round(det.areaSqM / 10000 * 10) / 10} ha</div>`;
+  if (tooShort) {
+    html += `<div class="analysis-error" style="margin-top:4px">&#9888; Below minimum 1000 ft (${fmtShortDist(MIN_LENGTH_M)}) landing length</div>`;
+  }
   html += `</div>`;
 
   // Surface

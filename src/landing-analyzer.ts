@@ -134,105 +134,88 @@ function buildPrompt(
   const styleLabel = getStyleConfig(wp.style).label;
   const tileWidthM = Math.round(256 * metersPerPx);
 
-  return `You are an expert glider pilot and aerial imagery analyst. You are examining a satellite image of a potential emergency landing site (landout field) for gliders. The image is centered on a waypoint marked with a red crosshair.
+  return `You are an expert glider pilot analyzing a satellite image of a potential landing field. A red crosshair marks the waypoint center.
 
-Image properties:
-- Zoom level: ${zoom}
-- Scale: approximately ${metersPerPx.toFixed(2)} meters per pixel
-- Total image coverage: approximately ${Math.round(totalWidthM)}m x ${Math.round(totalWidthM)}m
-- Each grid tile is 256x256 pixels = approximately ${tileWidthM}m x ${tileWidthM}m
-- Center coordinates: ${wp.lat.toFixed(5)}, ${wp.lon.toFixed(5)}
-- Elevation: ${Math.round(wp.elev)}m MSL
+Scale: ~${metersPerPx.toFixed(1)} m/pixel, image covers ~${Math.round(totalWidthM)}m x ${Math.round(totalWidthM)}m (zoom ${zoom}, tiles ~${tileWidthM}m each).
+Waypoint: "${wp.name}" (${styleLabel}), elevation ${Math.round(wp.elev)}m.${wp.rwdir ? ` Runway ${wp.rwdir}°, ${wp.rwlen}m long.` : ''}${wp.desc ? ` Notes: ${wp.desc}` : ''}
 
-Waypoint metadata from the cup file:
-- Name: ${wp.name}
-- Type: ${styleLabel}
-- Runway direction: ${wp.rwdir}° (0 = not specified)
-- Runway length: ${wp.rwlen}m (0 = not specified)
-- Runway width: ${wp.rwwidth}m (0 = not specified)
-- Description: ${wp.desc || 'none'}
+Please analyze this landing site and describe:
 
-Analyze this image for suitability as a glider landing site. Respond ONLY with a JSON object matching this exact schema (no markdown, no code fences, no extra text):
+1. LANDABLE AREA: Estimate the field dimensions (length x width in meters) and orientation. What is the usable length accounting for obstacles?
 
+2. SURFACE: What type of surface do you see? (grass, crop, stubble, bare earth, paved, gravel, mixed) How confident are you?
+
+3. OBSTRUCTIONS: List any visible obstructions — power lines, trees, fences, buildings, roads, water. For each, note the location and whether it's minor, moderate, or critical.
+
+4. APPROACH: What is the best approach direction? What hazards should a pilot watch for?
+
+5. SUITABILITY RATING: Rate 1-5 (1=unusable, 2=emergency only, 3=marginal, 4=good, 5=excellent). Give a one-sentence summary.
+
+After your analysis, provide a JSON summary block like this:
+\`\`\`json
 {
-  "landableArea": {
-    "lengthM": <number: estimated usable length in meters>,
-    "widthM": <number: estimated usable width in meters>,
-    "orientationDeg": <number: estimated orientation 0-359>,
-    "usableLengthM": <number: usable length after accounting for obstacles>
-  },
-  "surface": {
-    "primary": <string: one of "grass", "crop", "stubble", "bare_earth", "paved", "gravel", "mixed", "unknown">,
-    "confidence": <string: "high", "medium", or "low">,
-    "notes": <string: details about surface condition>
-  },
-  "obstructions": [
-    {
-      "type": <string: one of "power_line", "trees", "fence", "building", "road", "water", "terrain", "other">,
-      "location": <string: e.g. "northern boundary", "200m east of center">,
-      "severity": <string: "minor", "moderate", or "critical">,
-      "description": <string: brief description>
-    }
-  ],
-  "approach": {
-    "bestDirection": <string: e.g. "from the SW on heading 045">,
-    "hazards": [<string>, ...],
-    "notes": <string: additional approach/departure considerations>
-  },
-  "suitability": {
-    "rating": <number: 1-5, where 1=unusable, 2=emergency only, 3=marginal, 4=good, 5=excellent>,
-    "summary": <string: one sentence overall assessment>
+  "landableArea": {"lengthM": 400, "widthM": 80, "orientationDeg": 270, "usableLengthM": 350},
+  "surface": {"primary": "grass", "confidence": "medium", "notes": "appears mowed"},
+  "obstructions": [{"type": "trees", "location": "east boundary", "severity": "moderate", "description": "tree line"}],
+  "approach": {"bestDirection": "from the west", "hazards": ["trees on east side"], "notes": "clear approach from west"},
+  "suitability": {"rating": 3, "summary": "Marginal field, usable in emergency with careful approach from west."}
+}
+\`\`\``;
+}
+
+function tryParseJson(text: string): Record<string, unknown> | null {
+  // Try direct parse
+  try { return JSON.parse(text); } catch { /* continue */ }
+
+  // Try extracting JSON from code fences
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (fenceMatch) {
+    try { return JSON.parse(fenceMatch[1]); } catch { /* continue */ }
   }
-}`;
+
+  // Try extracting the outermost { ... } block
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    try { return JSON.parse(text.slice(start, end + 1)); } catch { /* continue */ }
+  }
+
+  return null;
 }
 
 function parseAnalysisResponse(text: string): AnalysisResult {
-  let parsed: Record<string, unknown>;
+  const parsed = tryParseJson(text);
 
-  // Try direct parse
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    // Try extracting JSON between first { and last }
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start !== -1 && end > start) {
-      try {
-        parsed = JSON.parse(text.slice(start, end + 1));
-      } catch {
-        // Try stripping code fences
-        const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-        if (fenceMatch) {
-          parsed = JSON.parse(fenceMatch[1]);
-        } else {
-          throw new Error('Could not parse analysis response as JSON');
-        }
-      }
-    } else {
-      throw new Error('No JSON found in analysis response');
+  if (parsed) {
+    const result = parsed as unknown as AnalysisResult;
+    result.rawResponse = text;
+    if (!result.landableArea) {
+      result.landableArea = { lengthM: 0, widthM: 0, orientationDeg: 0, usableLengthM: 0 };
     }
+    if (!result.surface) {
+      result.surface = { primary: 'unknown', confidence: 'low', notes: '' };
+    }
+    if (!result.obstructions) {
+      result.obstructions = [];
+    }
+    if (!result.approach) {
+      result.approach = { bestDirection: 'Unknown', hazards: [], notes: '' };
+    }
+    if (!result.suitability) {
+      result.suitability = { rating: 3, summary: 'Analysis incomplete' };
+    }
+    return result;
   }
 
-  const result = parsed as unknown as AnalysisResult;
-  result.rawResponse = text;
-
-  if (!result.landableArea) {
-    result.landableArea = { lengthM: 0, widthM: 0, orientationDeg: 0, usableLengthM: 0 };
-  }
-  if (!result.surface) {
-    result.surface = { primary: 'unknown', confidence: 'low', notes: '' };
-  }
-  if (!result.obstructions) {
-    result.obstructions = [];
-  }
-  if (!result.approach) {
-    result.approach = { bestDirection: 'Unknown', hazards: [], notes: '' };
-  }
-  if (!result.suitability) {
-    result.suitability = { rating: 3, summary: 'Analysis incomplete' };
-  }
-
-  return result;
+  // JSON parsing failed — return a raw-text result so the user still sees the analysis
+  return {
+    landableArea: { lengthM: 0, widthM: 0, orientationDeg: 0, usableLengthM: 0 },
+    surface: { primary: 'unknown', confidence: 'low', notes: '' },
+    obstructions: [],
+    approach: { bestDirection: '', hazards: [], notes: '' },
+    suitability: { rating: 0 as AnalysisResult['suitability']['rating'], summary: '' },
+    rawResponse: text,
+  };
 }
 
 export async function analyzeLandingSite(

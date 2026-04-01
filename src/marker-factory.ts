@@ -183,65 +183,90 @@ const STARS = ['', '\u2605', '\u2605\u2605', '\u2605\u2605\u2605', '\u2605\u2605
 
 export function buildAnalysisResultHtml(result: AnalysisResult): string {
   const r = result.suitability.rating;
+  const hasStructured = r > 0;
   let html = '';
 
-  // Rating
-  html += `<div class="analysis-rating analysis-rating-${r}">`;
-  html += `<span class="analysis-rating-stars">${STARS[r]}</span>`;
-  html += ` <span class="analysis-rating-label">${RATING_LABELS[r]}</span>`;
-  html += `<span class="analysis-rating-text">${escapeHtml(result.suitability.summary)}</span>`;
-  html += `</div>`;
+  if (hasStructured) {
+    // Rating
+    html += `<div class="analysis-rating analysis-rating-${r}">`;
+    html += `<span class="analysis-rating-stars">${STARS[r]}</span>`;
+    html += ` <span class="analysis-rating-label">${RATING_LABELS[r]}</span>`;
+    html += `<span class="analysis-rating-text">${escapeHtml(result.suitability.summary)}</span>`;
+    html += `</div>`;
 
-  // Landable area
-  html += `<div class="analysis-field">`;
-  html += `<div class="analysis-field-header">Landable Area</div>`;
-  html += `<div class="analysis-field-value">${result.landableArea.lengthM}m &times; ${result.landableArea.widthM}m</div>`;
-  html += `<div class="analysis-field-detail">Usable: ${result.landableArea.usableLengthM}m &bull; Orientation: ${result.landableArea.orientationDeg}&deg;</div>`;
-  html += `</div>`;
-
-  // Surface
-  html += `<div class="analysis-field">`;
-  html += `<div class="analysis-field-header">Surface</div>`;
-  html += `<div class="analysis-field-value">${formatSurface(result.surface.primary)} `;
-  html += `<span class="analysis-confidence confidence-${result.surface.confidence}">${result.surface.confidence}</span></div>`;
-  if (result.surface.notes) {
-    html += `<div class="analysis-field-detail">${escapeHtml(result.surface.notes)}</div>`;
-  }
-  html += `</div>`;
-
-  // Obstructions
-  if (result.obstructions.length > 0) {
-    html += `<div class="analysis-field">`;
-    html += `<div class="analysis-field-header">Obstructions</div>`;
-    for (const obs of result.obstructions) {
-      html += `<div class="analysis-obstruction obstruction-severity-${obs.severity}">`;
-      html += `<span class="obstruction-type">${formatObstructionType(obs.type)}</span>`;
-      html += `<span class="obstruction-detail">${escapeHtml(obs.location)} &mdash; ${escapeHtml(obs.description)}</span>`;
+    // Landable area
+    if (result.landableArea.lengthM > 0) {
+      html += `<div class="analysis-field">`;
+      html += `<div class="analysis-field-header">Landable Area</div>`;
+      html += `<div class="analysis-field-value">${result.landableArea.lengthM}m &times; ${result.landableArea.widthM}m</div>`;
+      html += `<div class="analysis-field-detail">Usable: ${result.landableArea.usableLengthM}m &bull; Orientation: ${result.landableArea.orientationDeg}&deg;</div>`;
       html += `</div>`;
     }
-    html += `</div>`;
-  }
 
-  // Approach
-  html += `<div class="analysis-field">`;
-  html += `<div class="analysis-field-header">Approach</div>`;
-  html += `<div class="analysis-field-value">${escapeHtml(result.approach.bestDirection)}</div>`;
-  if (result.approach.hazards.length > 0) {
-    html += `<ul class="analysis-hazards">`;
-    for (const h of result.approach.hazards) {
-      html += `<li>${escapeHtml(h)}</li>`;
+    // Surface
+    if (result.surface.primary !== 'unknown') {
+      html += `<div class="analysis-field">`;
+      html += `<div class="analysis-field-header">Surface</div>`;
+      html += `<div class="analysis-field-value">${formatSurface(result.surface.primary)} `;
+      html += `<span class="analysis-confidence confidence-${result.surface.confidence}">${result.surface.confidence}</span></div>`;
+      if (result.surface.notes) {
+        html += `<div class="analysis-field-detail">${escapeHtml(result.surface.notes)}</div>`;
+      }
+      html += `</div>`;
     }
-    html += `</ul>`;
-  }
-  if (result.approach.notes) {
-    html += `<div class="analysis-field-detail">${escapeHtml(result.approach.notes)}</div>`;
-  }
-  html += `</div>`;
 
-  // Change API key link
+    // Obstructions
+    if (result.obstructions.length > 0) {
+      html += `<div class="analysis-field">`;
+      html += `<div class="analysis-field-header">Obstructions</div>`;
+      for (const obs of result.obstructions) {
+        html += `<div class="analysis-obstruction obstruction-severity-${obs.severity}">`;
+        html += `<span class="obstruction-type">${formatObstructionType(obs.type)}</span>`;
+        html += `<span class="obstruction-detail">${escapeHtml(obs.location)} &mdash; ${escapeHtml(obs.description)}</span>`;
+        html += `</div>`;
+      }
+      html += `</div>`;
+    }
+
+    // Approach
+    if (result.approach.bestDirection) {
+      html += `<div class="analysis-field">`;
+      html += `<div class="analysis-field-header">Approach</div>`;
+      html += `<div class="analysis-field-value">${escapeHtml(result.approach.bestDirection)}</div>`;
+      if (result.approach.hazards.length > 0) {
+        html += `<ul class="analysis-hazards">`;
+        for (const h of result.approach.hazards) {
+          html += `<li>${escapeHtml(h)}</li>`;
+        }
+        html += `</ul>`;
+      }
+      if (result.approach.notes) {
+        html += `<div class="analysis-field-detail">${escapeHtml(result.approach.notes)}</div>`;
+      }
+      html += `</div>`;
+    }
+  }
+
+  // Always show raw response in a collapsible section
+  if (result.rawResponse) {
+    const label = hasStructured ? 'Full AI Response' : 'AI Analysis';
+    html += `<details class="analysis-raw" ${hasStructured ? '' : 'open'}>`;
+    html += `<summary class="analysis-raw-summary">${label}</summary>`;
+    html += `<div class="analysis-raw-text">${formatRawResponse(result.rawResponse)}</div>`;
+    html += `</details>`;
+  }
+
   html += `<div class="analysis-key-link"><a href="#" id="change-ollama-settings">Ollama Settings</a></div>`;
-
   return html;
+}
+
+function formatRawResponse(text: string): string {
+  // Convert markdown-like formatting to HTML
+  return escapeHtml(text)
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/```[\s\S]*?```/g, '<span style="opacity:0.4">[json data]</span>');
 }
 
 function formatSurface(s: string): string {

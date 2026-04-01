@@ -551,7 +551,41 @@ html, body {
   padding: 8px 0;
 }
 
-/* API key link */
+/* Raw response */
+.analysis-raw {
+  margin-top: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.analysis-raw-summary {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  user-select: none;
+}
+
+.analysis-raw-summary:hover {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.analysis-raw-text {
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.7);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.analysis-raw-text p {
+  margin-bottom: 8px;
+}
+
+/* Settings link */
 .analysis-key-link {
   margin-top: 12px;
   text-align: right;

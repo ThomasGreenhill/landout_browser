@@ -172,6 +172,44 @@ html, body {
   height: 100%;
 }
 
+/* Analysis map overlays */
+.obstruction-map-icon {
+  background: none !important;
+  border: none !important;
+}
+
+.obs-marker {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+.obs-marker-label {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.tape-label-icon {
+  background: none !important;
+  border: none !important;
+}
+
+.tape-label {
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
 /* Popup styles */
 .landout-popup .leaflet-popup-content-wrapper {
   border-radius: 10px;

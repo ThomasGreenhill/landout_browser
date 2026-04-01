@@ -8,11 +8,18 @@ export type SurfaceType =
   | 'mixed'
   | 'unknown';
 
+export interface PixelPoint {
+  x: number;
+  y: number;
+}
+
 export interface Obstruction {
   type: 'power_line' | 'trees' | 'fence' | 'building' | 'road' | 'water' | 'terrain' | 'other';
   location: string;
   severity: 'minor' | 'moderate' | 'critical';
   description: string;
+  /** Approximate pixel position in the 1280x1280 composite image */
+  pixelPos?: PixelPoint;
 }
 
 export interface AnalysisResult {
@@ -21,6 +28,8 @@ export interface AnalysisResult {
     widthM: number;
     orientationDeg: number;
     usableLengthM: number;
+    /** Four corners of the landable area in pixel coordinates (1280x1280 image) */
+    corners?: PixelPoint[];
   };
   surface: {
     primary: SurfaceType;

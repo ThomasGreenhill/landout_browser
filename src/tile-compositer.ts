@@ -30,6 +30,8 @@ export interface CompositeResult {
   dataUrl: string;
   metersPerPx: number;
   totalWidthM: number;
+  /** Convert pixel coordinates in the composite image to lat/lon */
+  pixelToLatLon: (px: number, py: number) => { lat: number; lon: number };
 }
 
 /**
@@ -120,9 +122,26 @@ export async function compositeTiles(
     );
   }
 
+  // Build pixel-to-latlng converter
+  // The canvas origin in tile-space is (center.x - half, center.y - half)
+  const originTileX = center.x - half;
+  const originTileY = center.y - half;
+
+  function pixelToLatLon(px: number, py: number): { lat: number; lon: number } {
+    // Convert pixel to tile-space fractional coordinates
+    const tileX = originTileX + px / TILE_SIZE;
+    const tileY = originTileY + py / TILE_SIZE;
+    // Convert tile coordinates back to lat/lon
+    const pLon = (tileX / n) * 360 - 180;
+    const pLatRad = Math.atan(Math.sinh(Math.PI * (1 - (2 * tileY) / n)));
+    const pLat = (pLatRad * 180) / Math.PI;
+    return { lat: pLat, lon: pLon };
+  }
+
   return {
     dataUrl,
     metersPerPx: mpp,
     totalWidthM: canvasSize * mpp,
+    pixelToLatLon,
   };
 }

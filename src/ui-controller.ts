@@ -1,11 +1,11 @@
 import L from 'leaflet';
 import { Waypoint, WaypointStyle, HomeInfo } from './types';
-import { AnalysisState } from './analysis-types';
+import { AnalysisState, AnalysisResult, PixelPoint } from './analysis-types';
 import { parseCupFile } from './cup-parser';
 import { haversineDistance, bearing, cardinalDirection } from './geo-utils';
 import { MapManager } from './map-manager';
 import { createMarkerIcon, buildTooltipText, buildDetailPanelHtml, buildAnalysisResultHtml, getStyleConfig } from './marker-factory';
-import { analyzeLandingSite, promptForSettings } from './landing-analyzer';
+import { analyzeLandingSite, promptForSettings, AnalysisOutput } from './landing-analyzer';
 
 interface MarkerEntry {
   marker: L.Marker;
@@ -155,13 +155,143 @@ export class UIController {
     this.updateAnalysisUI({ status: 'loading', message: 'Connecting to Ollama...' });
 
     try {
-      const result = await analyzeLandingSite(wp, (message) => {
+      const output = await analyzeLandingSite(wp, (message) => {
         this.updateAnalysisUI({ status: 'loading', message });
       });
-      this.updateAnalysisUI({ status: 'success', result });
+      this.updateAnalysisUI({ status: 'success', result: output.result });
+      this.drawAnalysisOverlays(output);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Analysis failed';
       this.updateAnalysisUI({ status: 'error', error: message });
+    }
+  }
+
+  private drawAnalysisOverlays(output: AnalysisOutput): void {
+    const { result, pixelToLatLon } = output;
+    // Keep existing layers (e.g. home line), add analysis overlays
+    const layer = this.mapManager.detailLayer;
+
+    // Draw landing area polygon
+    const corners = result.landableArea.corners;
+    if (corners && corners.length >= 3) {
+      const latlngs = corners.map((c) => {
+        const p = pixelToLatLon(c.x, c.y);
+        return [p.lat, p.lon] as L.LatLngTuple;
+      });
+      // Close the polygon
+      const polygon = L.polygon(latlngs, {
+        color: '#22c55e',
+        weight: 2,
+        fillColor: '#22c55e',
+        fillOpacity: 0.15,
+        dashArray: '6, 4',
+      });
+      layer.addLayer(polygon);
+
+      // Draw tape-measure lines for length and width
+      if (corners.length === 4) {
+        this.drawTapeMeasure(layer, corners, pixelToLatLon, result);
+      }
+    }
+
+    // Draw obstruction markers
+    for (const obs of result.obstructions) {
+      if (obs.pixelPos && obs.pixelPos.x > 0 && obs.pixelPos.y > 0) {
+        const p = pixelToLatLon(obs.pixelPos.x, obs.pixelPos.y);
+        const severityColor =
+          obs.severity === 'critical' ? '#ef4444' :
+          obs.severity === 'moderate' ? '#f59e0b' : '#94a3b8';
+        const icon = L.divIcon({
+          className: 'obstruction-map-icon',
+          html: `<div class="obs-marker" style="background:${severityColor}">
+            <span class="obs-marker-label">${this.obstructionIcon(obs.type)}</span>
+          </div>`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11],
+        });
+        const marker = L.marker([p.lat, p.lon], { icon, interactive: true });
+        marker.bindTooltip(
+          `<b>${obs.type.replace(/_/g, ' ')}</b><br>${obs.description}`,
+          { direction: 'top', offset: [0, -12] },
+        );
+        layer.addLayer(marker);
+      }
+    }
+  }
+
+  private drawTapeMeasure(
+    layer: L.LayerGroup,
+    corners: PixelPoint[],
+    pixelToLatLon: (px: number, py: number) => { lat: number; lon: number },
+    result: AnalysisResult,
+  ): void {
+    // Corners are typically ordered: 0-1 is one side, 1-2 is adjacent side
+    // Find the two longest edges to determine length vs width
+    const edges: Array<{ from: number; to: number; dist: number }> = [];
+    for (let i = 0; i < 4; i++) {
+      const j = (i + 1) % 4;
+      const dx = corners[j].x - corners[i].x;
+      const dy = corners[j].y - corners[i].y;
+      edges.push({ from: i, to: j, dist: Math.sqrt(dx * dx + dy * dy) });
+    }
+    edges.sort((a, b) => b.dist - a.dist);
+
+    // Longest edge pair = length, shorter pair = width
+    const lengthEdge = edges[0];
+    const widthEdge = edges.find(e =>
+      e.from !== lengthEdge.from && e.to !== lengthEdge.from &&
+      e.from !== lengthEdge.to && e.to !== lengthEdge.to
+    ) || edges[2];
+
+    // Draw length tape
+    this.drawSingleTape(layer, corners[lengthEdge.from], corners[lengthEdge.to],
+      `${result.landableArea.lengthM}m`, '#3b82f6', pixelToLatLon);
+
+    // Draw width tape
+    this.drawSingleTape(layer, corners[widthEdge.from], corners[widthEdge.to],
+      `${result.landableArea.widthM}m`, '#f59e0b', pixelToLatLon);
+  }
+
+  private drawSingleTape(
+    layer: L.LayerGroup,
+    from: PixelPoint, to: PixelPoint,
+    label: string, color: string,
+    pixelToLatLon: (px: number, py: number) => { lat: number; lon: number },
+  ): void {
+    const p1 = pixelToLatLon(from.x, from.y);
+    const p2 = pixelToLatLon(to.x, to.y);
+
+    // The measurement line
+    const line = L.polyline(
+      [[p1.lat, p1.lon], [p2.lat, p2.lon]],
+      { color, weight: 2, opacity: 0.9 },
+    );
+    layer.addLayer(line);
+
+    // End caps (perpendicular ticks) — draw as small offset markers
+    const midLat = (p1.lat + p2.lat) / 2;
+    const midLon = (p1.lon + p2.lon) / 2;
+
+    const labelIcon = L.divIcon({
+      className: 'tape-label-icon',
+      html: `<div class="tape-label" style="background:${color}">${label}</div>`,
+      iconSize: [60, 20],
+      iconAnchor: [30, 10],
+    });
+    const labelMarker = L.marker([midLat, midLon], { icon: labelIcon, interactive: false });
+    layer.addLayer(labelMarker);
+  }
+
+  private obstructionIcon(type: string): string {
+    switch (type) {
+      case 'power_line': return '\u26a1';
+      case 'trees': return '\ud83c\udf33';
+      case 'fence': return '\u2503';
+      case 'building': return '\ud83c\udfe0';
+      case 'road': return '\u2550';
+      case 'water': return '\ud83c\udf0a';
+      case 'terrain': return '\u26f0';
+      default: return '\u26a0';
     }
   }
 

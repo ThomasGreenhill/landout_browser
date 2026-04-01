@@ -8,7 +8,6 @@ const OLLAMA_MODEL_KEY = 'landout-ollama-model';
 const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
 const DEFAULT_OLLAMA_MODEL = 'llama3.2-vision';
 
-const analysisCache = new Map<string, AnalysisResult>();
 
 export function getOllamaUrl(): string {
   return localStorage.getItem(OLLAMA_URL_KEY) || DEFAULT_OLLAMA_URL;
@@ -129,36 +128,56 @@ function buildPrompt(
   wp: Waypoint,
   metersPerPx: number,
   totalWidthM: number,
-  zoom: number,
 ): string {
   const styleLabel = getStyleConfig(wp.style).label;
-  const tileWidthM = Math.round(256 * metersPerPx);
+
+  const imgSize = 5 * 256; // 1280px
 
   return `You are an expert glider pilot analyzing a satellite image of a potential landing field. A red crosshair marks the waypoint center.
 
-Scale: ~${metersPerPx.toFixed(1)} m/pixel, image covers ~${Math.round(totalWidthM)}m x ${Math.round(totalWidthM)}m (zoom ${zoom}, tiles ~${tileWidthM}m each).
-Waypoint: "${wp.name}" (${styleLabel}), elevation ${Math.round(wp.elev)}m.${wp.rwdir ? ` Runway ${wp.rwdir}°, ${wp.rwlen}m long.` : ''}${wp.desc ? ` Notes: ${wp.desc}` : ''}
+IMPORTANT IMAGE INFORMATION:
+- Image size: ${imgSize}x${imgSize} pixels
+- Scale: ~${metersPerPx.toFixed(2)} m/pixel (so 100 pixels = ~${Math.round(metersPerPx * 100)}m)
+- Total coverage: ~${Math.round(totalWidthM)}m x ${Math.round(totalWidthM)}m
+- Pixel (${imgSize / 2}, ${imgSize / 2}) is the center/crosshair
+- Top-left is (0,0), bottom-right is (${imgSize}, ${imgSize})
+- North is UP in the image
 
-Please analyze this landing site and describe:
+Waypoint: "${wp.name}" (${styleLabel}), elevation ${Math.round(wp.elev)}m.${wp.rwdir ? ` Runway heading ${wp.rwdir}°, listed length ${wp.rwlen}m.` : ''}${wp.desc ? ` Notes: ${wp.desc}` : ''}
 
-1. LANDABLE AREA: Estimate the field dimensions (length x width in meters) and orientation. What is the usable length accounting for obstacles?
+Analyze this landing site carefully:
 
-2. SURFACE: What type of surface do you see? (grass, crop, stubble, bare earth, paved, gravel, mixed) How confident are you?
+1. LANDABLE AREA: Identify the usable landing field. Use the scale (${metersPerPx.toFixed(2)} m/pixel) to calculate dimensions precisely. Count pixels between field edges and multiply by the scale factor. Provide the 4 corner pixel coordinates of the landable rectangle.
 
-3. OBSTRUCTIONS: List any visible obstructions — power lines, trees, fences, buildings, roads, water. For each, note the location and whether it's minor, moderate, or critical.
+2. SURFACE: What surface type do you see? Be specific and note condition.
 
-4. APPROACH: What is the best approach direction? What hazards should a pilot watch for?
+3. OBSTRUCTIONS: List ALL visible obstructions (power lines, trees, fences, buildings, roads, water). For each one, estimate its pixel position (x, y) in the image.
 
-5. SUITABILITY RATING: Rate 1-5 (1=unusable, 2=emergency only, 3=marginal, 4=good, 5=excellent). Give a one-sentence summary.
+4. APPROACH: Best approach direction considering wind and obstacles.
 
-After your analysis, provide a JSON summary block like this:
+5. SUITABILITY: Rate honestly from 1-5. 1=unusable, 2=emergency only with damage risk, 3=marginal but landable, 4=good field, 5=excellent/airstrip quality. Do NOT default to 3 — actually assess the field.
+
+After your text analysis, you MUST provide this JSON block:
 \`\`\`json
 {
-  "landableArea": {"lengthM": 400, "widthM": 80, "orientationDeg": 270, "usableLengthM": 350},
-  "surface": {"primary": "grass", "confidence": "medium", "notes": "appears mowed"},
-  "obstructions": [{"type": "trees", "location": "east boundary", "severity": "moderate", "description": "tree line"}],
-  "approach": {"bestDirection": "from the west", "hazards": ["trees on east side"], "notes": "clear approach from west"},
-  "suitability": {"rating": 3, "summary": "Marginal field, usable in emergency with careful approach from west."}
+  "landableArea": {
+    "lengthM": <calculated from pixel distance * ${metersPerPx.toFixed(2)}>,
+    "widthM": <calculated from pixel distance * ${metersPerPx.toFixed(2)}>,
+    "orientationDeg": <runway heading 0-359, north=0>,
+    "usableLengthM": <length minus obstacle encroachment>,
+    "corners": [
+      {"x": <pixel>, "y": <pixel>},
+      {"x": <pixel>, "y": <pixel>},
+      {"x": <pixel>, "y": <pixel>},
+      {"x": <pixel>, "y": <pixel>}
+    ]
+  },
+  "surface": {"primary": "<type>", "confidence": "<high|medium|low>", "notes": "<details>"},
+  "obstructions": [
+    {"type": "<type>", "location": "<description>", "severity": "<minor|moderate|critical>", "description": "<details>", "pixelPos": {"x": <pixel>, "y": <pixel>}}
+  ],
+  "approach": {"bestDirection": "<direction>", "hazards": ["<hazard>"], "notes": "<details>"},
+  "suitability": {"rating": <1-5>, "summary": "<one sentence>"}
 }
 \`\`\``;
 }
@@ -218,12 +237,19 @@ function parseAnalysisResponse(text: string): AnalysisResult {
   };
 }
 
+export interface AnalysisOutput {
+  result: AnalysisResult;
+  pixelToLatLon: (px: number, py: number) => { lat: number; lon: number };
+}
+
+const outputCache = new Map<string, AnalysisOutput>();
+
 export async function analyzeLandingSite(
   wp: Waypoint,
   onProgress: (message: string) => void,
-): Promise<AnalysisResult> {
+): Promise<AnalysisOutput> {
   const key = cacheKey(wp.lat, wp.lon);
-  const cached = analysisCache.get(key);
+  const cached = outputCache.get(key);
   if (cached) return cached;
 
   // Check Ollama is reachable
@@ -235,10 +261,10 @@ export async function analyzeLandingSite(
 
   onProgress('Fetching satellite tiles...');
   const zoom = 17;
-  const { dataUrl, metersPerPx, totalWidthM } = await compositeTiles(wp.lat, wp.lon, zoom);
+  const composite = await compositeTiles(wp.lat, wp.lon, zoom);
 
   // Strip the data URL prefix to get raw base64
-  const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, '');
+  const base64 = composite.dataUrl.replace(/^data:image\/jpeg;base64,/, '');
 
   const ollamaUrl = getOllamaUrl();
   const model = getOllamaModel();
@@ -254,7 +280,7 @@ export async function analyzeLandingSite(
       messages: [
         {
           role: 'user',
-          content: buildPrompt(wp, metersPerPx, totalWidthM, zoom),
+          content: buildPrompt(wp, composite.metersPerPx, composite.totalWidthM),
           images: [base64],
         },
       ],
@@ -273,6 +299,10 @@ export async function analyzeLandingSite(
   }
 
   const result = parseAnalysisResponse(text);
-  analysisCache.set(key, result);
-  return result;
+  const output: AnalysisOutput = {
+    result,
+    pixelToLatLon: composite.pixelToLatLon,
+  };
+  outputCache.set(key, output);
+  return output;
 }

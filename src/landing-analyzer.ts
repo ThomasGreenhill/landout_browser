@@ -70,9 +70,15 @@ export function promptForSettings(): Promise<boolean> {
       setOllamaSettings(urlInput.value.trim(), modelInput.value.trim());
       statusEl.innerHTML = '<span style="color:#f59e0b">Testing...</span>';
       const check = await checkOllamaConnection();
-      statusEl.innerHTML = check.ok
-        ? `<span style="color:#22c55e">Connected!</span>`
-        : `<span style="color:#ef4444">${check.error}</span>`;
+      if (check.ok) {
+        statusEl.innerHTML = '<span style="color:#22c55e">Connected!</span>';
+      } else {
+        statusEl.textContent = '';
+        const errSpan = document.createElement('span');
+        errSpan.style.color = '#ef4444';
+        errSpan.textContent = check.error || 'Unknown error';
+        statusEl.appendChild(errSpan);
+      }
     });
     document.getElementById('ollama-save')!.addEventListener('click', () => {
       const url = urlInput.value.trim(), model = modelInput.value.trim();

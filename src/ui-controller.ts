@@ -218,7 +218,7 @@ export class UIController {
     this.mapManager.map.getContainer().style.cursor = '';
   }
 
-  private executeDetection(wp: Waypoint, composite: CompositeResult, seedLat: number, seedLon: number, waypointIndex: number): void {
+  private async executeDetection(wp: Waypoint, composite: CompositeResult, seedLat: number, seedLon: number, waypointIndex: number): Promise<void> {
     const detectBtn = document.getElementById('detect-btn') as HTMLButtonElement | null;
     const container = document.getElementById('analysis-result')!;
 
@@ -226,7 +226,9 @@ export class UIController {
     container.innerHTML = '<div class="analysis-spinner"></div>';
 
     try {
-      const detection = runDetection(wp, composite, seedLat, seedLon);
+      const detection = await runDetection(wp, composite, seedLat, seedLon, (msg) => {
+        if (detectBtn) detectBtn.textContent = msg;
+      });
       this.lastDetectionOutput = { detection, composite };
 
       container.innerHTML = buildDetectionResultHtml(detection, waypointIndex);

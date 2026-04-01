@@ -1,6 +1,7 @@
 import { Waypoint } from './types';
 import { compositeTiles, CompositeResult } from './tile-compositer';
 import { detectField, FieldDetection } from './field-detector';
+import { getTerrainSafeDistances } from './terrain';
 
 const OLLAMA_URL_KEY = 'landout-ollama-url';
 const OLLAMA_MODEL_KEY = 'landout-ollama-model';
@@ -134,34 +135,85 @@ export async function fetchTilesForWaypoint(
 /**
  * Run field detection on a composite image with a specific seed point.
  * The seed is where the user clicked on the landing surface.
+ * Fetches terrain data to clamp the strip to flat ground.
  */
-export function runDetection(
+export async function runDetection(
   wp: Waypoint,
   composite: CompositeResult,
   seedLat: number,
   seedLon: number,
-): FieldDetection {
-  // Convert seed lat/lon to pixel coords in the canvas
-  // Use the inverse of pixelToLatLon — we need to search for the closest match
-  // Actually, we can compute it directly from the tile math
+  onProgress?: (msg: string) => void,
+): Promise<FieldDetection> {
   const { canvas, metersPerPx } = composite;
 
-  // Approximate pixel position: offset from waypoint center in meters, then to pixels
+  // Convert seed lat/lon to pixel coords
   const R = 6371000;
   const dLat = (seedLat - wp.lat) * Math.PI / 180;
   const dLon = (seedLon - wp.lon) * Math.PI / 180;
   const latRad = (wp.lat * Math.PI) / 180;
-  const dy = dLat * R; // meters north
-  const dx = dLon * R * Math.cos(latRad); // meters east
+  const dy = dLat * R;
+  const dx = dLon * R * Math.cos(latRad);
 
   const seedPx = composite.waypointPixel.x + dx / metersPerPx;
-  const seedPy = composite.waypointPixel.y - dy / metersPerPx; // y is inverted (north = up = -y)
+  const seedPy = composite.waypointPixel.y - dy / metersPerPx;
 
   const runway = (wp.rwdir > 0 && wp.rwlen > 0)
     ? { rwdir: wp.rwdir, rwlen: wp.rwlen, rwwidth: wp.rwwidth }
     : undefined;
 
-  return detectField(canvas, seedPx, seedPy, metersPerPx, runway);
+  // First pass: CV detection from the seed
+  const detection = detectField(canvas, seedPx, seedPy, metersPerPx, runway);
+
+  // Second pass: clamp strip to flat terrain
+  if (detection.lengthM > 30 && !runway) {
+    onProgress?.('Checking terrain...');
+    try {
+      const safeDist = await getTerrainSafeDistances(
+        seedLat, seedLon,
+        detection.orientationDeg,
+        detection.lengthM,
+        50, // sample every 50m
+        5,  // max 5% slope
+      );
+
+      // Clamp the strip length to safe terrain
+      const cvHalfFwd = detection.lengthM / 2;
+      const cvHalfBwd = detection.lengthM / 2;
+      const safeFwd = Math.min(cvHalfFwd, safeDist.fwdDistM);
+      const safeBwd = Math.min(cvHalfBwd, safeDist.bwdDistM);
+      const safeLength = safeFwd + safeBwd;
+
+      if (safeLength < detection.lengthM * 0.9) {
+        // Terrain clamped the strip — rebuild the boundary
+        const orient = detection.orientationDeg;
+        const rad = (orient * Math.PI) / 180;
+        const sinA = Math.sin(rad), cosA = Math.cos(rad);
+        const hw = detection.widthM / 2 / metersPerPx;
+
+        // New endpoints in pixels
+        const fwdPx = safeFwd / metersPerPx;
+        const bwdPx = safeBwd / metersPerPx;
+        const e1x = seedPx + sinA * fwdPx, e1y = seedPy - cosA * fwdPx;
+        const e2x = seedPx - sinA * bwdPx, e2y = seedPy + cosA * bwdPx;
+        const perpSin = Math.sin(rad + Math.PI / 2);
+        const perpCos = Math.cos(rad + Math.PI / 2);
+
+        detection.boundaryPixels = [
+          { x: e1x + perpSin * hw, y: e1y - perpCos * hw },
+          { x: e1x - perpSin * hw, y: e1y + perpCos * hw },
+          { x: e2x - perpSin * hw, y: e2y + perpCos * hw },
+          { x: e2x + perpSin * hw, y: e2y - perpCos * hw },
+        ];
+        detection.centerPixel = { x: (e1x + e2x) / 2, y: (e1y + e2y) / 2 };
+        detection.lengthM = Math.round(safeLength);
+        detection.areaSqM = Math.round(safeLength * detection.widthM);
+      }
+    } catch {
+      // Terrain API failed — proceed with CV-only result
+    }
+  }
+
+  return detection;
 }
 
 /**

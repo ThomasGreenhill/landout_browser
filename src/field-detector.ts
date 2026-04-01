@@ -5,6 +5,8 @@
 
 export interface FieldDetection {
   boundaryPixels: Array<{ x: number; y: number }>;
+  /** Polygon corners in lat/lon for direct map drawing (no pixel round-trip) */
+  boundaryLatLons?: Array<[number, number]>;
   centerPixel: { x: number; y: number };
   /** Original endpoint lat/lons (for two-click strips) */
   endpoint1?: { lat: number; lon: number };

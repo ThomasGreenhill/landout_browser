@@ -299,13 +299,12 @@ export class UIController {
     }
 
     const { detection, composite } = output;
-    const p2ll = composite.pixelToLatLon;
     const allPoints: L.LatLngTuple[] = [];
 
-    if (detection.boundaryPixels.length >= 3) {
-      const latlngs: L.LatLngTuple[] = detection.boundaryPixels.map((pt) => {
-        const ll = p2ll(pt.x, pt.y);
-        const tuple: L.LatLngTuple = [ll.lat, ll.lon];
+    // Draw polygon from lat/lon corners directly (no pixel round-trip)
+    if (detection.boundaryLatLons && detection.boundaryLatLons.length >= 3) {
+      const latlngs: L.LatLngTuple[] = detection.boundaryLatLons.map((c) => {
+        const tuple: L.LatLngTuple = [c[0], c[1]];
         allPoints.push(tuple);
         return tuple;
       });
@@ -321,7 +320,7 @@ export class UIController {
         end1 = [detection.endpoint1.lat, detection.endpoint1.lon];
         end2 = [detection.endpoint2.lat, detection.endpoint2.lon];
       } else {
-        const center = p2ll(detection.centerPixel.x, detection.centerPixel.y);
+        const center = composite.pixelToLatLon(detection.centerPixel.x, detection.centerPixel.y);
         const orient = detection.orientationDeg;
         const halfLen = detection.lengthM / 2;
         end1 = this.offsetLatLon(center.lat, center.lon, halfLen, orient);

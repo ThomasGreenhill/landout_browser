@@ -157,6 +157,7 @@ export function detectFromRunwayData(
 
   return {
     boundaryPixels: cornerPixels,
+    boundaryLatLons: cornerLatLons,
     centerPixel: centerPx,
     endpoint1: { lat: e1[0], lon: e1[1] },
     endpoint2: { lat: e2[0], lon: e2[1] },
@@ -192,27 +193,23 @@ export function detectFromEndpoints(
 ): FieldDetection {
   const strip = computeStripFromEndpoints(lat1, lon1, lat2, lon2, widthM);
 
-  // Convert endpoints to pixels using proper Mercator
+  // Build corners in lat/lon space using geodesic perpendicular offsets
+  const halfWid = widthM / 2;
+  const bearing = strip.orientationDeg;
+  const c1 = offsetLatLon(lat1, lon1, halfWid, (bearing + 90) % 360);
+  const c2 = offsetLatLon(lat1, lon1, halfWid, (bearing + 270) % 360);
+  const c3 = offsetLatLon(lat2, lon2, halfWid, (bearing + 270) % 360);
+  const c4 = offsetLatLon(lat2, lon2, halfWid, (bearing + 90) % 360);
+  const cornerLatLons: Array<[number, number]> = [c1, c2, c3, c4];
+
+  const cornerPixels = cornerLatLons.map(c => composite.latLonToPixel(c[0], c[1]));
   const p1 = composite.latLonToPixel(lat1, lon1);
   const p2 = composite.latLonToPixel(lat2, lon2);
-  const halfW = (widthM / 2) / composite.metersPerPx;
-
-  const dx = p2.x - p1.x, dy = p2.y - p1.y;
-  const len = Math.sqrt(dx * dx + dy * dy);
-  const perpX = len > 0 ? (-dy / len) * halfW : halfW;
-  const perpY = len > 0 ? (dx / len) * halfW : 0;
-
-  const corners = [
-    { x: p1.x + perpX, y: p1.y + perpY },
-    { x: p1.x - perpX, y: p1.y - perpY },
-    { x: p2.x - perpX, y: p2.y - perpY },
-    { x: p2.x + perpX, y: p2.y + perpY },
-  ];
-
   const centerPx = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
 
   return {
-    boundaryPixels: corners,
+    boundaryPixels: cornerPixels,
+    boundaryLatLons: cornerLatLons,
     centerPixel: centerPx,
     endpoint1: { lat: lat1, lon: lon1 },
     endpoint2: { lat: lat2, lon: lon2 },

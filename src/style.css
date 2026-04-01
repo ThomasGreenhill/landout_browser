@@ -21,3 +21,250 @@ html, body {
   height: 100%;
   z-index: 0;
 }
+
+/* File upload overlay */
+#file-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+}
+
+#file-overlay.hidden {
+  display: none;
+}
+
+.overlay-content {
+  text-align: center;
+  color: #fff;
+  background: rgba(30, 30, 30, 0.85);
+  border: 2px dashed rgba(255, 255, 255, 0.4);
+  border-radius: 16px;
+  padding: 48px 64px;
+  max-width: 440px;
+}
+
+.overlay-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.overlay-content h2 {
+  font-size: 24px;
+  margin-bottom: 8px;
+}
+
+.overlay-content p {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 20px;
+}
+
+#file-input {
+  display: none;
+}
+
+.file-label {
+  display: inline-block;
+  padding: 10px 24px;
+  background: #3b82f6;
+  color: #fff;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.file-label:hover {
+  background: #2563eb;
+}
+
+/* Toolbar */
+#toolbar {
+  display: none;
+  position: absolute;
+  top: 12px;
+  left: 60px;
+  z-index: 1000;
+  background: rgba(20, 20, 20, 0.88);
+  backdrop-filter: blur(8px);
+  color: #fff;
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 13px;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  max-width: calc(100% - 120px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+
+#toolbar.visible {
+  display: flex;
+}
+
+#toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#toolbar select {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  max-width: 200px;
+}
+
+#toolbar select option {
+  background: #1e1e1e;
+  color: #fff;
+}
+
+.toolbar-divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.toolbar-stats {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+}
+
+/* Distance slider group */
+.distance-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.distance-group input[type="range"] {
+  width: 80px;
+  accent-color: #3b82f6;
+}
+
+.distance-value {
+  min-width: 50px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* Marker styles */
+.marker-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  font-size: 11px;
+  font-weight: bold;
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.marker-grass {
+  background: #22c55e;
+}
+
+.marker-outlanding {
+  background: #f59e0b;
+  border-radius: 2px;
+}
+
+.marker-gliding {
+  background: #3b82f6;
+}
+
+.marker-paved {
+  background: #6b7280;
+}
+
+.marker-unknown {
+  background: #a855f7;
+}
+
+.marker-home {
+  background: #ef4444;
+  border-color: #fbbf24;
+  border-width: 3px;
+  z-index: 1000 !important;
+}
+
+/* Popup styles */
+.landout-popup .leaflet-popup-content-wrapper {
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.landout-popup .leaflet-popup-content {
+  margin: 12px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.popup-name {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.popup-distance {
+  color: #3b82f6;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.popup-detail {
+  color: #555;
+  font-size: 12px;
+}
+
+.popup-desc {
+  margin-top: 6px;
+  font-style: italic;
+  color: #666;
+  font-size: 12px;
+}
+
+.popup-home-btn {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 4px 12px;
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.popup-home-btn:hover {
+  background: #dc2626;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  #toolbar {
+    left: 8px;
+    right: 8px;
+    max-width: none;
+    top: 8px;
+  }
+
+  .overlay-content {
+    padding: 32px 24px;
+    margin: 16px;
+  }
+}

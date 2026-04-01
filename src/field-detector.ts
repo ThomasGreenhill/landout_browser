@@ -63,31 +63,100 @@ function samplePatch(data: Uint8ClampedArray, width: number, height: number, cx:
 // --- Ray measurement ---
 
 /**
- * Cast a ray from (cx, cy) in direction (dx, dy) and return how far
- * we can go before the color changes beyond tolerance.
- * Uses a rolling seed that adapts gradually to allow for slight color
- * variation along long runways/fields.
+ * Scan a perpendicular cross-section at a point along a direction
+ * and find the strip width by detecting color edges on both sides.
+ * Returns the left and right edge distances from center, or null if
+ * no clear strip edges are found.
  */
-function castRay(
+function findStripEdges(
+  data: Uint8ClampedArray, width: number, height: number,
+  px: number, py: number,
+  perpDx: number, perpDy: number,
+  centerR: number, centerG: number, centerB: number,
+  maxScan: number,
+): { left: number; right: number } | null {
+  const edgeThreshold = 40;
+  const step = 2;
+
+  // Find left edge: walk perpendicular until color jumps
+  let leftDist = 0;
+  let prevR = centerR, prevG = centerG, prevB = centerB;
+  for (let d = step; d < maxScan; d += step) {
+    const sx = Math.round(px + perpDx * d);
+    const sy = Math.round(py + perpDy * d);
+    if (sx < 2 || sy < 2 || sx >= width - 2 || sy >= height - 2) break;
+    const [sr, sg, sb] = samplePatch(data, width, height, sx, sy, 1);
+    const jump = colorDist(prevR, prevG, prevB, sr, sg, sb);
+    if (jump > edgeThreshold) { leftDist = d; break; }
+    prevR = sr; prevG = sg; prevB = sb;
+    leftDist = d;
+  }
+
+  // Find right edge
+  let rightDist = 0;
+  prevR = centerR; prevG = centerG; prevB = centerB;
+  for (let d = step; d < maxScan; d += step) {
+    const sx = Math.round(px - perpDx * d);
+    const sy = Math.round(py - perpDy * d);
+    if (sx < 2 || sy < 2 || sx >= width - 2 || sy >= height - 2) break;
+    const [sr, sg, sb] = samplePatch(data, width, height, sx, sy, 1);
+    const jump = colorDist(prevR, prevG, prevB, sr, sg, sb);
+    if (jump > edgeThreshold) { rightDist = d; break; }
+    prevR = sr; prevG = sg; prevB = sb;
+    rightDist = d;
+  }
+
+  // Must have found edges on both sides within a reasonable width
+  if (leftDist < 4 || rightDist < 4) return null;
+  return { left: leftDist, right: rightDist };
+}
+
+/**
+ * Cast a ray along a direction, using perpendicular edge detection to
+ * confirm we're still on a strip with clear edges. The strip ends when
+ * the perpendicular edges disappear (no more contrast on the sides).
+ */
+function castRayWithEdges(
   data: Uint8ClampedArray, width: number, height: number,
   cx: number, cy: number, dx: number, dy: number,
+  perpDx: number, perpDy: number,
   seedR: number, seedG: number, seedB: number,
   tolerance: number, maxDist: number,
+  refWidth: number, // expected strip half-width from center measurement
 ): { dist: number; endX: number; endY: number } {
-  const step = 3;
+  const step = 4;
   let dist = 0, endX = cx, endY = cy;
   let rr = seedR, rg = seedG, rb = seedB;
+  let missCount = 0;
 
   for (let d = step; d < maxDist; d += step) {
     const px = Math.round(cx + dx * d);
     const py = Math.round(cy + dy * d);
-    if (px < 3 || py < 3 || px >= width - 3 || py >= height - 3) break;
+    if (px < 4 || py < 4 || px >= width - 4 || py >= height - 4) break;
+
     const [pr, pg, pb] = samplePatch(data, width, height, px, py, 2);
 
-    // Check against both original seed and rolling average
+    // Color similarity check (generous — the edges do the real work)
     const distFromSeed = colorDist(seedR, seedG, seedB, pr, pg, pb);
     const distFromRolling = colorDist(rr, rg, rb, pr, pg, pb);
-    if (Math.min(distFromSeed, distFromRolling) > tolerance) break;
+    if (Math.min(distFromSeed, distFromRolling) > tolerance * 1.3) break;
+
+    // Check perpendicular edges every few steps
+    if (d % 12 === 0 && refWidth > 6) {
+      const edges = findStripEdges(data, width, height, px, py, perpDx, perpDy, pr, pg, pb, refWidth * 2);
+      if (!edges) {
+        missCount++;
+        if (missCount >= 2) break; // Two consecutive misses = we've left the strip
+      } else {
+        missCount = 0;
+        // Check that the detected width is reasonably close to the reference
+        const totalW = edges.left + edges.right;
+        if (totalW < refWidth * 0.3) {
+          missCount++;
+          if (missCount >= 2) break;
+        }
+      }
+    }
 
     dist = d;
     endX = px;
@@ -258,41 +327,68 @@ export function detectField(
       }
     }
   } else {
-    // --- CV ray-casting for outlanding fields ---
-    // Find the longest unobstructed straight run through the waypoint.
-    // Uses a rolling color average to handle gradual color changes.
+    // --- CV edge-based detection for outlanding fields ---
+    // Strategy: For each candidate direction, detect the strip by finding
+    // parallel color edges (left and right boundaries) along perpendicular
+    // cross-sections. The strip runs as long as those edges persist.
 
     const [seedR, seedG, seedB] = samplePatch(data, width, height, rawCx, rawCy, 6);
     const tolerance = 60;
-    const maxRayDist = 500; // pixels
+    const maxRayDist = 500;
 
-    // Cast rays in every 5° from 0-180° (each ray measures both directions)
-    let bestAngle = 0, bestTotalDist = 0;
-    let bestFwd = { dist: 0, endX: rawCx, endY: rawCy };
-    let bestBwd = { dist: 0, endX: rawCx, endY: rawCy };
+    // First pass: quick rays to find the best direction (longest color-similar run)
+    let bestAngle = 0, bestQuickDist = 0;
 
     for (let angleDeg = 0; angleDeg < 180; angleDeg += 5) {
       const rad = (angleDeg * Math.PI) / 180;
       const dx = Math.sin(rad), dy = -Math.cos(rad);
 
-      const fwd = castRay(data, width, height, rawCx, rawCy, dx, dy, seedR, seedG, seedB, tolerance, maxRayDist);
-      const bwd = castRay(data, width, height, rawCx, rawCy, -dx, -dy, seedR, seedG, seedB, tolerance, maxRayDist);
+      // Quick color-only ray in both directions
+      let fwdD = 0, bwdD = 0;
+      let rr = seedR, rg = seedG, rb = seedB;
+      for (let d = 3; d < maxRayDist; d += 3) {
+        const px = Math.round(rawCx + dx * d), py = Math.round(rawCy + dy * d);
+        if (px < 3 || py < 3 || px >= width - 3 || py >= height - 3) break;
+        const [pr, pg, pb] = samplePatch(data, width, height, px, py, 2);
+        if (Math.min(colorDist(seedR, seedG, seedB, pr, pg, pb), colorDist(rr, rg, rb, pr, pg, pb)) > tolerance) break;
+        fwdD = d;
+        rr = rr * 0.9 + pr * 0.1; rg = rg * 0.9 + pg * 0.1; rb = rb * 0.9 + pb * 0.1;
+      }
+      rr = seedR; rg = seedG; rb = seedB;
+      for (let d = 3; d < maxRayDist; d += 3) {
+        const px = Math.round(rawCx - dx * d), py = Math.round(rawCy - dy * d);
+        if (px < 3 || py < 3 || px >= width - 3 || py >= height - 3) break;
+        const [pr, pg, pb] = samplePatch(data, width, height, px, py, 2);
+        if (Math.min(colorDist(seedR, seedG, seedB, pr, pg, pb), colorDist(rr, rg, rb, pr, pg, pb)) > tolerance) break;
+        bwdD = d;
+        rr = rr * 0.9 + pr * 0.1; rg = rg * 0.9 + pg * 0.1; rb = rb * 0.9 + pb * 0.1;
+      }
 
-      const totalDist = fwd.dist + bwd.dist;
-      if (totalDist > bestTotalDist) {
-        bestTotalDist = totalDist;
+      if (fwdD + bwdD > bestQuickDist) {
+        bestQuickDist = fwdD + bwdD;
         bestAngle = angleDeg;
-        bestFwd = fwd;
-        bestBwd = bwd;
       }
     }
 
-    // Measure perpendicular width at center
+    // Measure perpendicular strip width at center using edge detection
     const perpRad = ((bestAngle + 90) * Math.PI) / 180;
     const perpDx = Math.sin(perpRad), perpDy = -Math.cos(perpRad);
-    const widLeft = castRay(data, width, height, rawCx, rawCy, perpDx, perpDy, seedR, seedG, seedB, tolerance, 200);
-    const widRight = castRay(data, width, height, rawCx, rawCy, -perpDx, -perpDy, seedR, seedG, seedB, tolerance, 200);
-    const totalWidPx = widLeft.dist + widRight.dist;
+    const centerEdges = findStripEdges(data, width, height, rawCx, rawCy, perpDx, perpDy, seedR, seedG, seedB, 150);
+    const refHalfWidth = centerEdges ? (centerEdges.left + centerEdges.right) / 2 : 30;
+    const totalWidPx = centerEdges ? centerEdges.left + centerEdges.right : 0;
+
+    // Second pass: refined rays with edge confirmation along the best direction
+    const bestRad = (bestAngle * Math.PI) / 180;
+    const bestDx = Math.sin(bestRad), bestDy = -Math.cos(bestRad);
+
+    const bestFwd = castRayWithEdges(data, width, height, rawCx, rawCy,
+      bestDx, bestDy, perpDx, perpDy,
+      seedR, seedG, seedB, tolerance, maxRayDist, refHalfWidth);
+    const bestBwd = castRayWithEdges(data, width, height, rawCx, rawCy,
+      -bestDx, -bestDy, perpDx, perpDy,
+      seedR, seedG, seedB, tolerance, maxRayDist, refHalfWidth);
+
+    const bestTotalDist = bestFwd.dist + bestBwd.dist;
 
     // Build corners from the ray endpoints + perpendicular width
     const hw = Math.max(totalWidPx / 2, 10);

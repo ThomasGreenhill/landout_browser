@@ -1,6 +1,6 @@
 import { Waypoint } from './types';
 import { compositeTiles, CompositeResult } from './tile-compositer';
-import { FieldDetection, buildRunwayRect, buildStripRectFromEndpoints, computeStripFromEndpoints } from './field-detector';
+import { FieldDetection, buildRunwayRect, computeStripFromEndpoints } from './field-detector';
 
 // --- Ollama settings ---
 
@@ -140,14 +140,8 @@ export function detectFromRunwayData(
 ): FieldDetection {
   const { metersPerPx } = composite;
 
-  // Convert click lat/lon to pixel
-  const R = 6371000;
-  const dLat = (centerLat - wp.lat) * Math.PI / 180;
-  const dLon = (centerLon - wp.lon) * Math.PI / 180;
-  const latRad = wp.lat * Math.PI / 180;
-  const dy = dLat * R, dx = dLon * R * Math.cos(latRad);
-  const cx = composite.waypointPixel.x + dx / metersPerPx;
-  const cy = composite.waypointPixel.y - dy / metersPerPx;
+  // Convert click lat/lon to pixel using proper Mercator projection
+  const { x: cx, y: cy } = composite.latLonToPixel(centerLat, centerLon);
 
   const widthM = wp.rwwidth || Math.max(wp.rwlen * 0.04, 15);
   const corners = buildRunwayRect(cx, cy, wp.rwdir, wp.rwlen, wp.rwwidth, metersPerPx);
@@ -169,27 +163,32 @@ export function detectFromRunwayData(
 // --- Detection from two endpoints (user-drawn) ---
 
 export function detectFromEndpoints(
-  wp: Waypoint,
+  _wp: Waypoint,
   composite: CompositeResult,
   lat1: number, lon1: number,
   lat2: number, lon2: number,
   widthM = 30,
 ): FieldDetection {
   const strip = computeStripFromEndpoints(lat1, lon1, lat2, lon2, widthM);
-  const corners = buildStripRectFromEndpoints(
-    lat1, lon1, lat2, lon2, widthM,
-    wp.lat, wp.lon, composite.metersPerPx, composite.waypointPixel,
-  );
 
-  // Center in pixel space
-  const R = 6371000;
-  const dLat = (strip.centerLat - wp.lat) * Math.PI / 180;
-  const dLon = (strip.centerLon - wp.lon) * Math.PI / 180;
-  const latRad = wp.lat * Math.PI / 180;
-  const centerPx = {
-    x: composite.waypointPixel.x + (dLon * R * Math.cos(latRad)) / composite.metersPerPx,
-    y: composite.waypointPixel.y - (dLat * R) / composite.metersPerPx,
-  };
+  // Convert endpoints to pixels using proper Mercator
+  const p1 = composite.latLonToPixel(lat1, lon1);
+  const p2 = composite.latLonToPixel(lat2, lon2);
+  const halfW = (widthM / 2) / composite.metersPerPx;
+
+  const dx = p2.x - p1.x, dy = p2.y - p1.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  const perpX = len > 0 ? (-dy / len) * halfW : halfW;
+  const perpY = len > 0 ? (dx / len) * halfW : 0;
+
+  const corners = [
+    { x: p1.x + perpX, y: p1.y + perpY },
+    { x: p1.x - perpX, y: p1.y - perpY },
+    { x: p2.x - perpX, y: p2.y - perpY },
+    { x: p2.x + perpX, y: p2.y + perpY },
+  ];
+
+  const centerPx = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
 
   return {
     boundaryPixels: corners,

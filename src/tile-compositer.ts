@@ -36,6 +36,8 @@ export interface CompositeResult {
   waypointPixel: { x: number; y: number };
   /** Convert pixel coordinates in the full-res canvas to lat/lon */
   pixelToLatLon: (px: number, py: number) => { lat: number; lon: number };
+  /** Convert lat/lon to pixel coordinates in the full-res canvas */
+  latLonToPixel: (lat: number, lon: number) => { x: number; y: number };
 }
 
 /**
@@ -148,6 +150,16 @@ export async function compositeTiles(
     return { lat: pLat, lon: pLon };
   }
 
+  function latLonToPixel(lat: number, lon: number): { x: number; y: number } {
+    const tileX = ((lon + 180) / 360) * n;
+    const latR = (lat * Math.PI) / 180;
+    const tileY = (1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2 * n;
+    return {
+      x: (tileX - originTileX) * TILE_SIZE,
+      y: (tileY - originTileY) * TILE_SIZE,
+    };
+  }
+
   return {
     dataUrl,
     canvas,
@@ -155,5 +167,6 @@ export async function compositeTiles(
     totalWidthM: canvasSize * mpp,
     waypointPixel: { x: wpPixelX, y: wpPixelY },
     pixelToLatLon,
+    latLonToPixel,
   };
 }

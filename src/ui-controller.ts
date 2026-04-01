@@ -160,7 +160,7 @@ export class UIController {
         this.updateAnalysisUI({ status: 'loading', message });
       });
       this.updateAnalysisUI({ status: 'success', result: output.result });
-      this.drawAnalysisOverlays(wp, output.result);
+      this.drawAnalysisOverlays(wp, output.result, output.pixelToLatLon);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Analysis failed';
       this.updateAnalysisUI({ status: 'error', error: message });
@@ -188,12 +188,26 @@ export class UIController {
     return [(lat2 * 180) / Math.PI, (lon2 * 180) / Math.PI];
   }
 
-  private drawAnalysisOverlays(wp: Waypoint, result: AnalysisResult): void {
+  private drawAnalysisOverlays(
+    wp: Waypoint,
+    result: AnalysisResult,
+    pixelToLatLon: (px: number, py: number) => { lat: number; lon: number },
+  ): void {
     const layer = this.mapManager.detailLayer;
     const area = result.landableArea;
 
+    // Determine the actual field center — use AI-reported pixel center if available,
+    // otherwise fall back to waypoint location
+    let fieldLat = wp.lat;
+    let fieldLon = wp.lon;
+    if (area.centerPixel && area.centerPixel.x > 0 && area.centerPixel.y > 0) {
+      const fieldCenter = pixelToLatLon(area.centerPixel.x, area.centerPixel.y);
+      fieldLat = fieldCenter.lat;
+      fieldLon = fieldCenter.lon;
+    }
+
     // Collect all overlay points so we can fit the map to show them
-    const allPoints: L.LatLngTuple[] = [[wp.lat, wp.lon]];
+    const allPoints: L.LatLngTuple[] = [[fieldLat, fieldLon]];
 
     // Only draw if we have meaningful dimensions
     if (area.lengthM > 10 && area.widthM > 5) {
@@ -204,9 +218,9 @@ export class UIController {
       const halfLen = area.lengthM / 2;
       const halfWid = area.widthM / 2;
 
-      // Compute runway endpoints along the orientation axis
-      const rwyEnd1 = this.offsetLatLon(wp.lat, wp.lon, halfLen, orient);
-      const rwyEnd2 = this.offsetLatLon(wp.lat, wp.lon, halfLen, (orient + 180) % 360);
+      // Compute runway endpoints along the orientation axis FROM THE FIELD CENTER
+      const rwyEnd1 = this.offsetLatLon(fieldLat, fieldLon, halfLen, orient);
+      const rwyEnd2 = this.offsetLatLon(fieldLat, fieldLon, halfLen, (orient + 180) % 360);
 
       // Compute 4 corners (rectangle around runway)
       const corner1 = this.offsetLatLon(rwyEnd1[0], rwyEnd1[1], halfWid, (orient + 90) % 360);
@@ -229,29 +243,35 @@ export class UIController {
       // Length tape measure (along runway axis)
       this.drawTapeLine(layer, rwyEnd1, rwyEnd2, fmtShortDist(area.lengthM), '#3b82f6');
 
-      // Width tape measure (perpendicular, at center)
-      const w1 = this.offsetLatLon(wp.lat, wp.lon, halfWid, (orient + 90) % 360);
-      const w2 = this.offsetLatLon(wp.lat, wp.lon, halfWid, (orient + 270) % 360);
+      // Width tape measure (perpendicular, at field center)
+      const w1 = this.offsetLatLon(fieldLat, fieldLon, halfWid, (orient + 90) % 360);
+      const w2 = this.offsetLatLon(fieldLat, fieldLon, halfWid, (orient + 270) % 360);
       this.drawTapeLine(layer, w1, w2, fmtShortDist(area.widthM), '#f59e0b');
 
       // Usable length indicator (solid green line, if different from total)
       if (area.usableLengthM > 0 && area.usableLengthM < area.lengthM) {
         const halfUsable = area.usableLengthM / 2;
-        const u1 = this.offsetLatLon(wp.lat, wp.lon, halfUsable, orient);
-        const u2 = this.offsetLatLon(wp.lat, wp.lon, halfUsable, (orient + 180) % 360);
+        const u1 = this.offsetLatLon(fieldLat, fieldLon, halfUsable, orient);
+        const u2 = this.offsetLatLon(fieldLat, fieldLon, halfUsable, (orient + 180) % 360);
         layer.addLayer(L.polyline([u1, u2], {
           color: '#22c55e', weight: 5, opacity: 0.8,
         }));
       }
     }
 
-    // Obstruction markers — place around the field perimeter based on location text
+    // Obstruction markers — use pixel positions if available, otherwise place by location text
     if (result.obstructions.length > 0) {
       const fieldRadius = Math.max(area.lengthM, area.widthM, 200) * 0.6;
       for (let i = 0; i < result.obstructions.length; i++) {
         const obs = result.obstructions[i];
-        const angle = this.locationToAngle(obs.location, i, result.obstructions.length);
-        const pos = this.offsetLatLon(wp.lat, wp.lon, fieldRadius, angle);
+        let pos: L.LatLngTuple;
+        if (obs.pixelPos && obs.pixelPos.x > 0 && obs.pixelPos.y > 0) {
+          const p = pixelToLatLon(obs.pixelPos.x, obs.pixelPos.y);
+          pos = [p.lat, p.lon];
+        } else {
+          const angle = this.locationToAngle(obs.location, i, result.obstructions.length);
+          pos = this.offsetLatLon(fieldLat, fieldLon, fieldRadius, angle);
+        }
         allPoints.push(pos);
 
         const severityColor =

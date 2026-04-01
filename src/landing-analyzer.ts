@@ -147,7 +147,7 @@ Waypoint: "${wp.name}" (${styleLabel}), elevation ${Math.round(wp.elev)}m.${wp.r
 
 Analyze this landing site carefully:
 
-1. LANDABLE AREA: Identify the usable landing field. Use the scale (${metersPerPx.toFixed(2)} m/pixel) to calculate dimensions precisely. Count pixels between field edges and multiply by the scale factor. Provide the 4 corner pixel coordinates of the landable rectangle.
+1. LANDABLE AREA: Identify the usable landing field. Use the scale (${metersPerPx.toFixed(2)} m/pixel) to calculate dimensions precisely. Count pixels between field edges and multiply by the scale factor. IMPORTANT: The field center may NOT be at the crosshair — report the pixel (x,y) of the actual field center.
 
 2. SURFACE: What surface type do you see? Be specific and note condition.
 
@@ -165,12 +165,7 @@ After your text analysis, you MUST provide this JSON block:
     "widthM": <calculated from pixel distance * ${metersPerPx.toFixed(2)}>,
     "orientationDeg": <runway heading 0-359, north=0>,
     "usableLengthM": <length minus obstacle encroachment>,
-    "corners": [
-      {"x": <pixel>, "y": <pixel>},
-      {"x": <pixel>, "y": <pixel>},
-      {"x": <pixel>, "y": <pixel>},
-      {"x": <pixel>, "y": <pixel>}
-    ]
+    "centerPixel": {"x": <pixel x of field center>, "y": <pixel y of field center>}
   },
   "surface": {"primary": "<type>", "confidence": "<high|medium|low>", "notes": "<details>"},
   "obstructions": [

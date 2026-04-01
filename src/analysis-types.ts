@@ -28,6 +28,8 @@ export interface AnalysisResult {
     widthM: number;
     orientationDeg: number;
     usableLengthM: number;
+    /** Center of the landing field in pixel coordinates (1280x1280 image) */
+    centerPixel?: PixelPoint;
     /** Four corners of the landable area in pixel coordinates (1280x1280 image) */
     corners?: PixelPoint[];
   };

@@ -131,51 +131,18 @@ function buildPrompt(
 ): string {
   const styleLabel = getStyleConfig(wp.style).label;
 
-  const imgSize = 5 * 256; // 1280px
+  const imgSize = 5 * 256;
 
-  return `You are an expert glider pilot analyzing a satellite image of a potential landing field. A red crosshair marks the waypoint center.
+  return `Analyze this satellite image of a glider landing field. Red crosshair = waypoint. Scale: ${metersPerPx.toFixed(1)} m/pixel, image is ${imgSize}px wide (~${Math.round(totalWidthM)}m). North is up. Image center pixel is (${imgSize / 2},${imgSize / 2}).
 
-IMPORTANT IMAGE INFORMATION:
-- Image size: ${imgSize}x${imgSize} pixels
-- Scale: ~${metersPerPx.toFixed(2)} m/pixel (so 100 pixels = ~${Math.round(metersPerPx * 100)}m)
-- Total coverage: ~${Math.round(totalWidthM)}m x ${Math.round(totalWidthM)}m
-- Pixel (${imgSize / 2}, ${imgSize / 2}) is the center/crosshair
-- Top-left is (0,0), bottom-right is (${imgSize}, ${imgSize})
-- North is UP in the image
+Waypoint: "${wp.name}" (${styleLabel}), ${Math.round(wp.elev)}m elev.${wp.rwdir ? ` RWY ${wp.rwdir}°/${wp.rwlen}m.` : ''}
 
-Waypoint: "${wp.name}" (${styleLabel}), elevation ${Math.round(wp.elev)}m.${wp.rwdir ? ` Runway heading ${wp.rwdir}°, listed length ${wp.rwlen}m.` : ''}${wp.desc ? ` Notes: ${wp.desc}` : ''}
+Briefly describe: field dimensions, surface type, obstructions, best approach, and rate 1-5.
 
-Analyze this landing site carefully:
-
-1. LANDABLE AREA: Identify the usable landing field. Use the scale (${metersPerPx.toFixed(2)} m/pixel) to calculate dimensions precisely. Count pixels between field edges and multiply by the scale factor. IMPORTANT: The field center may NOT be at the crosshair — report the pixel (x,y) of the actual field center.
-
-2. SURFACE: What surface type do you see? Be specific and note condition.
-
-3. OBSTRUCTIONS: List ALL visible obstructions (power lines, trees, fences, buildings, roads, water). For each one, estimate its pixel position (x, y) in the image.
-
-4. APPROACH: Best approach direction considering wind and obstacles.
-
-5. SUITABILITY: Rate honestly from 1-5. 1=unusable, 2=emergency only with damage risk, 3=marginal but landable, 4=good field, 5=excellent/airstrip quality. Do NOT default to 3 — actually assess the field.
-
-After your text analysis, you MUST provide a JSON block. Use real numbers, not placeholders. Example:
+Then provide this JSON (replace values with your analysis):
 \`\`\`json
-{
-  "landableArea": {
-    "lengthM": 450,
-    "widthM": 80,
-    "orientationDeg": 270,
-    "usableLengthM": 400,
-    "centerPixel": {"x": 680, "y": 610}
-  },
-  "surface": {"primary": "grass", "confidence": "medium", "notes": "appears mowed recently"},
-  "obstructions": [
-    {"type": "trees", "location": "east boundary", "severity": "moderate", "description": "tree line 15m tall", "pixelPos": {"x": 900, "y": 640}}
-  ],
-  "approach": {"bestDirection": "from the west on heading 090", "hazards": ["trees on east side"], "notes": "clear approach from west"},
-  "suitability": {"rating": 4, "summary": "Good field with clear approaches from the west."}
-}
-\`\`\`
-Replace ALL values with your actual analysis. The centerPixel must be the pixel (x,y) of the field center in the image. Remember: image center is (${imgSize / 2},${imgSize / 2}).`;
+{"landableArea":{"lengthM":450,"widthM":80,"orientationDeg":270,"usableLengthM":400,"centerPixel":{"x":680,"y":610}},"surface":{"primary":"grass","confidence":"medium","notes":"mowed"},"obstructions":[{"type":"trees","location":"east","severity":"moderate","description":"tree line"}],"approach":{"bestDirection":"from west","hazards":["trees east"],"notes":"clear west"},"suitability":{"rating":4,"summary":"Good field."}}
+\`\`\``;
 }
 
 function tryParseJson(text: string): Record<string, unknown> | null {

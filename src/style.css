@@ -420,6 +420,224 @@ html, body {
   font-size: 13px;
 }
 
+/* Analysis section */
+.detail-analysis-section {
+  margin: 20px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 16px;
+}
+
+.detail-analyze-btn {
+  width: 100%;
+  padding: 10px 16px;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.detail-analyze-btn:hover {
+  background: #1d4ed8;
+}
+
+.detail-analyze-btn:disabled {
+  background: rgba(37, 99, 235, 0.5);
+  cursor: wait;
+}
+
+/* Spinner */
+.analysis-spinner {
+  display: flex;
+  justify-content: center;
+  padding: 20px;
+}
+
+.analysis-spinner::after {
+  content: '';
+  width: 24px;
+  height: 24px;
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Rating */
+.analysis-rating {
+  padding: 12px;
+  border-radius: 8px;
+  margin: 12px 0;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.analysis-rating-stars {
+  font-size: 18px;
+  color: #fbbf24;
+}
+
+.analysis-rating-label {
+  font-size: 14px;
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+.analysis-rating-text {
+  display: block;
+  font-size: 13px;
+  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.analysis-rating-5 { border-left: 3px solid #22c55e; }
+.analysis-rating-4 { border-left: 3px solid #84cc16; }
+.analysis-rating-3 { border-left: 3px solid #f59e0b; }
+.analysis-rating-2 { border-left: 3px solid #f97316; }
+.analysis-rating-1 { border-left: 3px solid #ef4444; }
+
+/* Analysis fields */
+.analysis-field {
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.analysis-field-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.4);
+  margin-bottom: 4px;
+}
+
+.analysis-field-value {
+  font-size: 13px;
+}
+
+.analysis-field-detail {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-top: 2px;
+}
+
+/* Confidence badges */
+.analysis-confidence {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.confidence-high { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+.confidence-medium { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+.confidence-low { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+
+/* Obstructions */
+.analysis-obstruction {
+  font-size: 12px;
+  padding: 4px 0;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.obstruction-type {
+  font-weight: 600;
+  min-width: 90px;
+  flex-shrink: 0;
+}
+
+.obstruction-detail {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.obstruction-severity-critical .obstruction-type { color: #ef4444; }
+.obstruction-severity-moderate .obstruction-type { color: #f59e0b; }
+.obstruction-severity-minor .obstruction-type { color: rgba(255, 255, 255, 0.6); }
+
+/* Approach hazards */
+.analysis-hazards {
+  margin: 4px 0 0 16px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.analysis-hazards li {
+  margin: 2px 0;
+}
+
+/* Error */
+.analysis-error {
+  color: #ef4444;
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+/* API key link */
+.analysis-key-link {
+  margin-top: 12px;
+  text-align: right;
+}
+
+.analysis-key-link a {
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.analysis-key-link a:hover {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* API key modal */
+.api-key-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+}
+
+.api-key-modal-content {
+  background: rgba(30, 30, 30, 0.95);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 400px;
+  width: 90%;
+  color: #fff;
+}
+
+.api-key-modal-content input {
+  width: 100%;
+  padding: 8px 12px;
+  margin: 12px 0;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 14px;
+}
+
+.api-key-modal-content input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.api-key-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 /* Responsive */
 @media (max-width: 640px) {
   #toolbar {

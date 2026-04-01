@@ -1,5 +1,6 @@
 import L from 'leaflet';
 import { Waypoint, WaypointStyle, HomeInfo } from './types';
+import { AnalysisResult } from './analysis-types';
 
 const STYLE_CONFIG: Record<number, { css: string; label: string; size: number }> = {
   [WaypointStyle.GrassAirfield]: { css: 'marker-grass', label: 'Grass airfield', size: 20 },
@@ -118,9 +119,89 @@ export function buildDetailPanelHtml(wp: Waypoint, index: number, homeInfo?: Hom
     html += `<div class="detail-desc">${escapeHtml(wp.desc)}</div>`;
   }
 
+  // Analysis section
+  html += `<div class="detail-analysis-section">`;
+  html += `<button class="detail-analyze-btn" id="analyze-btn" data-wp-index="${index}">Analyze Landing Site</button>`;
+  html += `<div id="analysis-result"></div>`;
+  html += `</div>`;
+
   html += `<button class="popup-home-btn detail-home-btn" data-home-index="${index}">Set as Home</button>`;
 
   return html;
+}
+
+const RATING_LABELS = ['', 'Unusable', 'Emergency only', 'Marginal', 'Good', 'Excellent'];
+const STARS = ['', '\u2605', '\u2605\u2605', '\u2605\u2605\u2605', '\u2605\u2605\u2605\u2605', '\u2605\u2605\u2605\u2605\u2605'];
+
+export function buildAnalysisResultHtml(result: AnalysisResult): string {
+  const r = result.suitability.rating;
+  let html = '';
+
+  // Rating
+  html += `<div class="analysis-rating analysis-rating-${r}">`;
+  html += `<span class="analysis-rating-stars">${STARS[r]}</span>`;
+  html += ` <span class="analysis-rating-label">${RATING_LABELS[r]}</span>`;
+  html += `<span class="analysis-rating-text">${escapeHtml(result.suitability.summary)}</span>`;
+  html += `</div>`;
+
+  // Landable area
+  html += `<div class="analysis-field">`;
+  html += `<div class="analysis-field-header">Landable Area</div>`;
+  html += `<div class="analysis-field-value">${result.landableArea.lengthM}m &times; ${result.landableArea.widthM}m</div>`;
+  html += `<div class="analysis-field-detail">Usable: ${result.landableArea.usableLengthM}m &bull; Orientation: ${result.landableArea.orientationDeg}&deg;</div>`;
+  html += `</div>`;
+
+  // Surface
+  html += `<div class="analysis-field">`;
+  html += `<div class="analysis-field-header">Surface</div>`;
+  html += `<div class="analysis-field-value">${formatSurface(result.surface.primary)} `;
+  html += `<span class="analysis-confidence confidence-${result.surface.confidence}">${result.surface.confidence}</span></div>`;
+  if (result.surface.notes) {
+    html += `<div class="analysis-field-detail">${escapeHtml(result.surface.notes)}</div>`;
+  }
+  html += `</div>`;
+
+  // Obstructions
+  if (result.obstructions.length > 0) {
+    html += `<div class="analysis-field">`;
+    html += `<div class="analysis-field-header">Obstructions</div>`;
+    for (const obs of result.obstructions) {
+      html += `<div class="analysis-obstruction obstruction-severity-${obs.severity}">`;
+      html += `<span class="obstruction-type">${formatObstructionType(obs.type)}</span>`;
+      html += `<span class="obstruction-detail">${escapeHtml(obs.location)} &mdash; ${escapeHtml(obs.description)}</span>`;
+      html += `</div>`;
+    }
+    html += `</div>`;
+  }
+
+  // Approach
+  html += `<div class="analysis-field">`;
+  html += `<div class="analysis-field-header">Approach</div>`;
+  html += `<div class="analysis-field-value">${escapeHtml(result.approach.bestDirection)}</div>`;
+  if (result.approach.hazards.length > 0) {
+    html += `<ul class="analysis-hazards">`;
+    for (const h of result.approach.hazards) {
+      html += `<li>${escapeHtml(h)}</li>`;
+    }
+    html += `</ul>`;
+  }
+  if (result.approach.notes) {
+    html += `<div class="analysis-field-detail">${escapeHtml(result.approach.notes)}</div>`;
+  }
+  html += `</div>`;
+
+  // Change API key link
+  html += `<div class="analysis-key-link"><a href="#" id="change-api-key">Change API Key</a></div>`;
+
+  return html;
+}
+
+function formatSurface(s: string): string {
+  return s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatObstructionType(t: string): string {
+  return t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function escapeHtml(s: string): string {

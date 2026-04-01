@@ -1,9 +1,11 @@
 import L from 'leaflet';
 import { Waypoint, WaypointStyle, HomeInfo } from './types';
+import { AnalysisState } from './analysis-types';
 import { parseCupFile } from './cup-parser';
 import { haversineDistance, bearing, cardinalDirection } from './geo-utils';
 import { MapManager } from './map-manager';
-import { createMarkerIcon, buildTooltipText, buildDetailPanelHtml, getStyleConfig } from './marker-factory';
+import { createMarkerIcon, buildTooltipText, buildDetailPanelHtml, buildAnalysisResultHtml, getStyleConfig } from './marker-factory';
+import { analyzeLandingSite, getApiKey, clearApiKey, promptForApiKey } from './landing-analyzer';
 
 interface MarkerEntry {
   marker: L.Marker;
@@ -75,6 +77,20 @@ export class UIController {
         return;
       }
 
+      const analyzeBtn = target.closest('#analyze-btn') as HTMLElement | null;
+      if (analyzeBtn) {
+        const index = parseInt(analyzeBtn.dataset.wpIndex!, 10);
+        this.runAnalysis(index);
+        return;
+      }
+
+      const changeKeyLink = target.closest('#change-api-key');
+      if (changeKeyLink) {
+        e.preventDefault();
+        promptForApiKey();
+        return;
+      }
+
       const homeBtn = target.closest('.popup-home-btn') as HTMLElement | null;
       if (homeBtn) {
         const index = parseInt(homeBtn.dataset.homeIndex!, 10);
@@ -130,6 +146,58 @@ export class UIController {
     if (this.savedView) {
       this.mapManager.map.setView(this.savedView.center, this.savedView.zoom, { animate: true });
       this.savedView = null;
+    }
+  }
+
+  private async runAnalysis(waypointIndex: number): Promise<void> {
+    const wp = this.waypoints[waypointIndex];
+
+    let apiKey = getApiKey();
+    if (!apiKey) {
+      apiKey = await promptForApiKey();
+      if (!apiKey) return;
+    }
+
+    this.updateAnalysisUI({ status: 'loading', message: 'Fetching satellite tiles...' });
+
+    try {
+      const result = await analyzeLandingSite(wp, apiKey, (message) => {
+        this.updateAnalysisUI({ status: 'loading', message });
+      });
+      this.updateAnalysisUI({ status: 'success', result });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Analysis failed';
+      if (message.includes('401') || message.includes('authentication') || message.includes('invalid x-api-key')) {
+        clearApiKey();
+        this.updateAnalysisUI({ status: 'error', error: 'Invalid API key. Click Analyze to try again.' });
+      } else {
+        this.updateAnalysisUI({ status: 'error', error: message });
+      }
+    }
+  }
+
+  private updateAnalysisUI(state: AnalysisState): void {
+    const container = document.getElementById('analysis-result');
+    const btn = document.getElementById('analyze-btn') as HTMLButtonElement | null;
+    if (!container) return;
+
+    switch (state.status) {
+      case 'idle':
+        container.innerHTML = '';
+        if (btn) { btn.disabled = false; btn.textContent = 'Analyze Landing Site'; }
+        break;
+      case 'loading':
+        if (btn) { btn.disabled = true; btn.textContent = state.message; }
+        container.innerHTML = '<div class="analysis-spinner"></div>';
+        break;
+      case 'success':
+        if (btn) { btn.disabled = false; btn.textContent = 'Re-analyze'; }
+        container.innerHTML = buildAnalysisResultHtml(state.result);
+        break;
+      case 'error':
+        if (btn) { btn.disabled = false; btn.textContent = 'Analyze Landing Site'; }
+        container.innerHTML = `<div class="analysis-error">${state.error}</div>`;
+        break;
     }
   }
 

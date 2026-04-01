@@ -68,6 +68,61 @@ export function buildTooltipText(wp: Waypoint, homeInfo?: HomeInfo): string {
   return wp.name;
 }
 
+export function buildDetailPanelHtml(wp: Waypoint, index: number, homeInfo?: HomeInfo): string {
+  const config = getStyleConfig(wp.style);
+
+  let html = `<button class="detail-back-btn" id="detail-back">&larr; Back to overview</button>`;
+
+  html += `<h2 class="detail-name">${escapeHtml(wp.name)}</h2>`;
+  if (wp.code) html += `<div class="detail-code">${escapeHtml(wp.code)}</div>`;
+
+  // Direction compass + distance (only when home is set)
+  if (homeInfo) {
+    const arrowRotation = homeInfo.bearingDeg + 180; // point back toward home
+    html += `<div class="detail-home-section">`;
+    html += `  <div class="detail-compass">`;
+    html += `    <div class="compass-ring">`;
+    html += `      <div class="compass-arrow" style="transform:rotate(${arrowRotation}deg)"></div>`;
+    html += `      <div class="compass-label">N</div>`;
+    html += `    </div>`;
+    html += `  </div>`;
+    html += `  <div class="detail-home-info">`;
+    html += `    <div class="detail-distance">${homeInfo.distanceKm.toFixed(1)} km</div>`;
+    html += `    <div class="detail-bearing">${homeInfo.cardinalDir} of home (${homeInfo.bearingDeg.toFixed(0)}&deg;)</div>`;
+    html += `  </div>`;
+    html += `</div>`;
+  }
+
+  // Info rows
+  html += `<div class="detail-rows">`;
+  html += `<div class="detail-row"><span class="detail-label">Type</span><span>${config.label}</span></div>`;
+  html += `<div class="detail-row"><span class="detail-label">Elevation</span><span>${Math.round(wp.elev)} m</span></div>`;
+  if (wp.country) {
+    html += `<div class="detail-row"><span class="detail-label">Country</span><span>${escapeHtml(wp.country)}</span></div>`;
+  }
+  if (wp.rwlen > 0) {
+    let rwy = `${Math.round(wp.rwlen)} m`;
+    if (wp.rwdir > 0) rwy += ` / ${wp.rwdir}&deg;`;
+    html += `<div class="detail-row"><span class="detail-label">Runway</span><span>${rwy}</span></div>`;
+  }
+  if (wp.rwwidth > 0) {
+    html += `<div class="detail-row"><span class="detail-label">RWY Width</span><span>${Math.round(wp.rwwidth)} m</span></div>`;
+  }
+  if (wp.freq) {
+    html += `<div class="detail-row"><span class="detail-label">Frequency</span><span>${escapeHtml(wp.freq)}</span></div>`;
+  }
+  html += `<div class="detail-row"><span class="detail-label">Position</span><span>${wp.lat.toFixed(5)}, ${wp.lon.toFixed(5)}</span></div>`;
+  html += `</div>`;
+
+  if (wp.desc) {
+    html += `<div class="detail-desc">${escapeHtml(wp.desc)}</div>`;
+  }
+
+  html += `<button class="popup-home-btn detail-home-btn" data-home-index="${index}">Set as Home</button>`;
+
+  return html;
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

@@ -3,7 +3,7 @@ import { Waypoint, WaypointStyle, HomeInfo } from './types';
 import { parseCupFile } from './cup-parser';
 import { haversineDistance, bearing, cardinalDirection } from './geo-utils';
 import { MapManager } from './map-manager';
-import { createMarkerIcon, buildPopupHtml, buildTooltipText, getStyleConfig } from './marker-factory';
+import { createMarkerIcon, buildTooltipText, buildDetailPanelHtml, getStyleConfig } from './marker-factory';
 
 interface MarkerEntry {
   marker: L.Marker;
@@ -16,18 +16,22 @@ export class UIController {
   private markers: MarkerEntry[] = [];
   private homeIndex: number | null = null;
   private maxDistanceKm = Infinity;
+  private savedView: { center: L.LatLng; zoom: number } | null = null;
 
   private readonly overlay: HTMLElement;
   private readonly toolbar: HTMLElement;
   private readonly fileInput: HTMLInputElement;
+  private readonly detailPanel: HTMLElement;
 
   constructor(private readonly mapManager: MapManager) {
     this.overlay = document.getElementById('file-overlay')!;
     this.toolbar = document.getElementById('toolbar')!;
     this.fileInput = document.getElementById('file-input') as HTMLInputElement;
+    this.detailPanel = document.getElementById('detail-panel')!;
 
     this.setupFileHandling();
     this.setupPopupDelegation();
+    this.setupDetailDelegation();
   }
 
   private setupFileHandling(): void {
@@ -60,6 +64,73 @@ export class UIController {
         this.setHome(index);
       }
     });
+  }
+
+  private setupDetailDelegation(): void {
+    this.detailPanel.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+
+      if (target.closest('#detail-back')) {
+        this.exitDetailMode();
+        return;
+      }
+
+      const homeBtn = target.closest('.popup-home-btn') as HTMLElement | null;
+      if (homeBtn) {
+        const index = parseInt(homeBtn.dataset.homeIndex!, 10);
+        this.setHome(index);
+        // Refresh detail panel with updated home info
+        this.openDetailMode(index);
+      }
+    });
+  }
+
+  private openDetailMode(waypointIndex: number): void {
+    const wp = this.waypoints[waypointIndex];
+    const home = this.homeIndex !== null ? this.waypoints[this.homeIndex] : null;
+    const homeInfo = home && waypointIndex !== this.homeIndex
+      ? this.computeHomeInfo(wp, home)
+      : undefined;
+
+    // Save current map view so we can restore it
+    if (!this.savedView) {
+      this.savedView = {
+        center: this.mapManager.map.getCenter(),
+        zoom: this.mapManager.map.getZoom(),
+      };
+    }
+
+    // Zoom to the waypoint
+    this.mapManager.map.setView([wp.lat, wp.lon], 16, { animate: true });
+
+    // Draw direction line to home
+    this.mapManager.detailLayer.clearLayers();
+    if (home && waypointIndex !== this.homeIndex) {
+      const line = L.polyline(
+        [[wp.lat, wp.lon], [home.lat, home.lon]],
+        { color: '#ef4444', weight: 2, opacity: 0.7, dashArray: '8, 6' },
+      );
+      this.mapManager.detailLayer.addLayer(line);
+    }
+
+    // Show detail panel
+    this.detailPanel.innerHTML = buildDetailPanelHtml(wp, waypointIndex, homeInfo);
+    this.detailPanel.classList.remove('hidden');
+    this.toolbar.classList.remove('visible');
+
+    // Close any open popup
+    this.mapManager.map.closePopup();
+  }
+
+  private exitDetailMode(): void {
+    this.detailPanel.classList.add('hidden');
+    this.toolbar.classList.add('visible');
+    this.mapManager.detailLayer.clearLayers();
+
+    if (this.savedView) {
+      this.mapManager.map.setView(this.savedView.center, this.savedView.zoom, { animate: true });
+      this.savedView = null;
+    }
   }
 
   private loadFile(file: File): void {
@@ -141,6 +212,7 @@ export class UIController {
     });
 
     document.getElementById('reload-btn')!.addEventListener('click', () => {
+      this.exitDetailMode();
       this.overlay.classList.remove('hidden');
       this.toolbar.classList.remove('visible');
       this.mapManager.clearWaypoints();
@@ -155,14 +227,11 @@ export class UIController {
     this.waypoints.forEach((wp, i) => {
       const icon = createMarkerIcon(wp.style);
       const marker = L.marker([wp.lat, wp.lon], { icon });
-      marker.bindPopup(buildPopupHtml(wp, i), {
-        maxWidth: 300,
-        className: 'landout-popup',
-      });
       marker.bindTooltip(buildTooltipText(wp), {
         direction: 'top',
         offset: [0, -12],
       });
+      marker.on('click', () => this.openDetailMode(i));
 
       this.mapManager.waypointLayer.addLayer(marker);
       this.markers.push({ marker, waypoint: wp, index: i });
@@ -190,7 +259,6 @@ export class UIController {
 
       const isHome = entry.index === index;
       entry.marker.setIcon(createMarkerIcon(entry.waypoint.style, isHome));
-      entry.marker.setPopupContent(buildPopupHtml(entry.waypoint, entry.index, isHome ? undefined : info));
       entry.marker.setTooltipContent(buildTooltipText(entry.waypoint, isHome ? undefined : info));
 
       if (isHome) {

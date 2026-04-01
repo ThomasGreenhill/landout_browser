@@ -4,6 +4,7 @@ export class MapManager {
   readonly map: L.Map;
   readonly waypointLayer = L.layerGroup();
   readonly homeMarkerLayer = L.layerGroup();
+  readonly detailLayer = L.layerGroup();
 
   constructor(elementId: string) {
     this.map = L.map(elementId, {
@@ -31,6 +32,7 @@ export class MapManager {
 
     this.waypointLayer.addTo(this.map);
     this.homeMarkerLayer.addTo(this.map);
+    this.detailLayer.addTo(this.map);
 
     L.control.layers(
       { 'Satellite': satellite },

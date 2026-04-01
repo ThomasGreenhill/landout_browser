@@ -309,6 +309,48 @@ function detectObstructions(
   return obstructions;
 }
 
+// --- Runway metadata from .cup file ---
+
+export interface RunwayHint {
+  /** Runway direction in degrees (0-360) */
+  rwdir: number;
+  /** Runway length in meters */
+  rwlen: number;
+  /** Runway width in meters (0 if unknown) */
+  rwwidth: number;
+}
+
+/**
+ * Build a runway rectangle from known metadata.
+ * Returns corner points in pixel coordinates.
+ */
+function buildRunwayRect(
+  cx: number, cy: number,
+  rwdir: number, rwlen: number, rwwidth: number,
+  metersPerPx: number,
+): Array<{ x: number; y: number }> {
+  const halfLenPx = (rwlen / 2) / metersPerPx;
+  const halfWidPx = ((rwwidth || rwlen * 0.06) / 2) / metersPerPx; // default width ~6% of length
+  // Convert runway heading to canvas angle (0°=north=up, clockwise)
+  const rad = (rwdir * Math.PI) / 180;
+  const sinA = Math.sin(rad), cosA = Math.cos(rad);
+
+  // Runway endpoints along the heading
+  const e1x = cx + sinA * halfLenPx, e1y = cy - cosA * halfLenPx;
+  const e2x = cx - sinA * halfLenPx, e2y = cy + cosA * halfLenPx;
+
+  // Perpendicular offset for width
+  const perpSin = Math.sin(rad + Math.PI / 2);
+  const perpCos = Math.cos(rad + Math.PI / 2);
+
+  return [
+    { x: e1x + perpSin * halfWidPx, y: e1y - perpCos * halfWidPx },
+    { x: e1x - perpSin * halfWidPx, y: e1y + perpCos * halfWidPx },
+    { x: e2x - perpSin * halfWidPx, y: e2y + perpCos * halfWidPx },
+    { x: e2x + perpSin * halfWidPx, y: e2y - perpCos * halfWidPx },
+  ];
+}
+
 // --- Main detection ---
 
 export function detectField(
@@ -316,6 +358,7 @@ export function detectField(
   centerX: number,
   centerY: number,
   metersPerPx: number,
+  runway?: RunwayHint,
 ): FieldDetection {
   const ctx = canvas.getContext('2d')!;
   const { width, height } = canvas;
@@ -325,99 +368,131 @@ export function detectField(
   const rawCx = Math.round(Math.min(Math.max(centerX, 0), width - 1));
   const rawCy = Math.round(Math.min(Math.max(centerY, 0), height - 1));
 
-  // Search nearby for the darkest area (prioritize pavement/runway over grass)
-  const dark = findDarkestNearby(data, width, height, rawCx, rawCy, 80);
-  const cx = dark.x;
-  const cy = dark.y;
+  let boundaryPixels: Array<{ x: number; y: number }>;
+  let centerPx: { x: number; y: number };
+  let lengthM: number;
+  let widthM: number;
+  let orientationDeg: number;
+  let fieldPixelCount: number;
+  let mask: Uint8Array;
 
-  // Color-similarity flood fill with tolerance
-  // Try multiple tolerances and pick the one that gives a reasonable field size
-  let bestMask: Uint8Array | null = null;
-  let bestCount = 0;
-  const minFieldPixels = 100;
-  const maxFieldPixels = (width * height) / 4;
+  if (runway && runway.rwdir > 0 && runway.rwlen > 0) {
+    // --- Use .cup runway metadata directly ---
+    const corners = buildRunwayRect(rawCx, rawCy, runway.rwdir, runway.rwlen, runway.rwwidth, metersPerPx);
+    boundaryPixels = corners;
+    centerPx = { x: rawCx, y: rawCy };
+    lengthM = runway.rwlen;
+    widthM = runway.rwwidth || Math.round(runway.rwlen * 0.06);
+    orientationDeg = runway.rwdir > 180 ? runway.rwdir - 180 : runway.rwdir;
+    fieldPixelCount = Math.round((runway.rwlen / metersPerPx) * (widthM / metersPerPx));
 
-  for (const tol of [30, 40, 50, 60, 70]) {
-    const mask = similarityFloodFill(data, width, height, cx, cy, tol);
-    let count = 0;
-    for (let i = 0; i < mask.length; i += 16) { if (mask[i]) count++; }
-    count *= 16;
-
-    if (count >= minFieldPixels && count <= maxFieldPixels) {
-      if (!bestMask || count > bestCount) {
-        bestMask = mask;
-        bestCount = count;
-      }
-      // Stop at first tolerance that gives a reasonable fill
-      // Higher tolerance = larger fill, so stop early for tighter boundary
-      if (count > minFieldPixels * 10) break;
-    }
-  }
-
-  if (!bestMask) {
-    // Fallback: use highest tolerance result even if too large
-    bestMask = similarityFloodFill(data, width, height, cx, cy, 50);
-    for (let i = 0; i < bestMask.length; i += 16) { if (bestMask[i]) bestCount++; }
-    bestCount *= 16;
-  }
-
-  const mask = bestMask;
-
-  // Collect boundary pixels
-  const boundaryPoints: Array<{ x: number; y: number }> = [];
-  let fieldPixelCount = 0;
-
-  for (let y = 0; y < height; y += 4) {
-    for (let x = 0; x < width; x += 4) {
-      if (!mask[y * width + x]) continue;
-      fieldPixelCount++;
-      let isBoundary = false;
-      for (const [dx, dy] of [[4, 0], [-4, 0], [0, 4], [0, -4]]) {
-        const nx = x + dx, ny = y + dy;
-        if (nx < 0 || ny < 0 || nx >= width || ny >= height || !mask[ny * width + nx]) {
-          isBoundary = true; break;
+    // Build mask from the rectangle for surface/obstruction analysis
+    mask = new Uint8Array(width * height);
+    // Simple scanline fill of the rotated rectangle
+    const minY = Math.max(0, Math.floor(Math.min(...corners.map(c => c.y))));
+    const maxY = Math.min(height - 1, Math.ceil(Math.max(...corners.map(c => c.y))));
+    for (let y = minY; y <= maxY; y++) {
+      const minX = Math.max(0, Math.floor(Math.min(...corners.map(c => c.x))));
+      const maxX = Math.min(width - 1, Math.ceil(Math.max(...corners.map(c => c.x))));
+      for (let x = minX; x <= maxX; x++) {
+        if (pointInPolygon(x, y, corners)) {
+          mask[y * width + x] = 1;
         }
       }
-      if (isBoundary) boundaryPoints.push({ x, y });
     }
+  } else {
+    // --- CV-based detection for outlanding fields ---
+    const dark = findDarkestNearby(data, width, height, rawCx, rawCy, 80);
+    const cx = dark.x, cy = dark.y;
+
+    let bestMask: Uint8Array | null = null;
+    let bestCount = 0;
+    const minFP = 100, maxFP = (width * height) / 4;
+
+    for (const tol of [30, 40, 50, 60, 70]) {
+      const m = similarityFloodFill(data, width, height, cx, cy, tol);
+      let count = 0;
+      for (let i = 0; i < m.length; i += 16) { if (m[i]) count++; }
+      count *= 16;
+      if (count >= minFP && count <= maxFP) {
+        if (!bestMask || count > bestCount) { bestMask = m; bestCount = count; }
+        if (count > minFP * 10) break;
+      }
+    }
+    if (!bestMask) {
+      bestMask = similarityFloodFill(data, width, height, cx, cy, 50);
+      for (let i = 0; i < bestMask.length; i += 16) { if (bestMask[i]) bestCount++; }
+      bestCount *= 16;
+    }
+    mask = bestMask;
+
+    // Collect boundary pixels
+    const bPoints: Array<{ x: number; y: number }> = [];
+    let fpCount = 0;
+    for (let py = 0; py < height; py += 4) {
+      for (let px = 0; px < width; px += 4) {
+        if (!mask[py * width + px]) continue;
+        fpCount++;
+        for (const [dx, dy] of [[4, 0], [-4, 0], [0, 4], [0, -4]]) {
+          const nx = px + dx, ny = py + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height || !mask[ny * width + nx]) {
+            bPoints.push({ x: px, y: py }); break;
+          }
+        }
+      }
+    }
+
+    let hullInput = bPoints;
+    if (hullInput.length > 2000) {
+      const step = Math.ceil(hullInput.length / 2000);
+      hullInput = hullInput.filter((_, i) => i % step === 0);
+    }
+    const hull = convexHull(hullInput);
+    const rect = minBoundingRect(hull);
+
+    const lPx = Math.max(rect.width, rect.height);
+    const wPx = Math.min(rect.width, rect.height);
+    let angle = rect.angle;
+    if (rect.height > rect.width) angle += Math.PI / 2;
+    let bearing = (90 - (angle * 180) / Math.PI) % 360;
+    if (bearing < 0) bearing += 360;
+    if (bearing > 180) bearing -= 180;
+
+    boundaryPixels = hull.length > 50
+      ? hull.filter((_, i) => i % Math.ceil(hull.length / 50) === 0)
+      : hull;
+    centerPx = rect.center;
+    lengthM = Math.round(lPx * metersPerPx);
+    widthM = Math.round(wPx * metersPerPx);
+    orientationDeg = Math.round(bearing);
+    fieldPixelCount = fpCount * 16;
   }
-
-  let hullInput = boundaryPoints;
-  if (hullInput.length > 2000) {
-    const step = Math.ceil(hullInput.length / 2000);
-    hullInput = hullInput.filter((_, i) => i % step === 0);
-  }
-
-  const hull = convexHull(hullInput);
-  const rect = minBoundingRect(hull);
-
-  let lengthPx = Math.max(rect.width, rect.height);
-  let widthPx = Math.min(rect.width, rect.height);
-  let angle = rect.angle;
-  if (rect.height > rect.width) angle += Math.PI / 2;
-
-  let bearingDeg = (90 - (angle * 180) / Math.PI) % 360;
-  if (bearingDeg < 0) bearingDeg += 360;
-  if (bearingDeg > 180) bearingDeg -= 180;
 
   const surface = classifySurface(data, mask, width);
-  const obstructions = detectObstructions(data, mask, width, height, cx, cy);
-
-  let outputHull = hull;
-  if (outputHull.length > 50) {
-    const step = Math.ceil(outputHull.length / 50);
-    outputHull = outputHull.filter((_, i) => i % step === 0);
-  }
+  const obstructions = detectObstructions(data, mask, width, height, rawCx, rawCy);
 
   return {
-    boundaryPixels: outputHull,
-    centerPixel: rect.center,
-    lengthM: Math.round(lengthPx * metersPerPx),
-    widthM: Math.round(widthPx * metersPerPx),
-    orientationDeg: Math.round(bearingDeg),
+    boundaryPixels,
+    centerPixel: centerPx,
+    lengthM,
+    widthM,
+    orientationDeg,
     surface,
     obstructions,
-    fieldPixelCount: fieldPixelCount * 16,
-    areaSqM: Math.round(fieldPixelCount * 16 * metersPerPx * metersPerPx),
+    fieldPixelCount,
+    areaSqM: Math.round(fieldPixelCount * metersPerPx * metersPerPx),
   };
+}
+
+/** Point-in-polygon test (ray casting) */
+function pointInPolygon(px: number, py: number, polygon: Array<{ x: number; y: number }>): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y;
+    const xj = polygon[j].x, yj = polygon[j].y;
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
 }

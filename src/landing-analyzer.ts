@@ -140,11 +140,15 @@ export async function detectLandingSite(
   const composite = await compositeTiles(wp.lat, wp.lon, 17, 3);
 
   onProgress('Detecting field...');
+  const runway = (wp.rwdir > 0 && wp.rwlen > 0)
+    ? { rwdir: wp.rwdir, rwlen: wp.rwlen, rwwidth: wp.rwwidth }
+    : undefined;
   const detection = detectField(
     composite.canvas,
     composite.waypointPixel.x,
     composite.waypointPixel.y,
     composite.metersPerPx,
+    runway,
   );
 
   const output: DetectionOutput = { detection, composite };

@@ -27,6 +27,7 @@ export class UIController {
   private lastDetectionOutput: DetectionOutput | null = null;
   private pendingComposite: { waypointIndex: number; composite: CompositeResult } | null = null;
   private mapClickHandler: ((e: L.LeafletMouseEvent) => void) | null = null;
+  private lastStripEndpoints: { waypointIndex: number; lat1: number; lon1: number; lat2: number; lon2: number } | null = null;
 
   private readonly overlay: HTMLElement;
   private readonly toolbar: HTMLElement;
@@ -41,6 +42,12 @@ export class UIController {
     this.setupFileHandling();
     this.setupPopupDelegation();
     this.setupDetailDelegation();
+    this.detailPanel.addEventListener('input', (e) => {
+      const target = e.target as HTMLElement;
+      if (target.id === 'strip-width-input') {
+        this.updateStripWidth(parseInt((target as HTMLInputElement).value, 10));
+      }
+    });
   }
 
   private setupFileHandling(): void {
@@ -75,6 +82,7 @@ export class UIController {
       if (aiBtn) { this.runAiDescription(parseInt(aiBtn.dataset.wpIndex!, 10)); return; }
 
       if (target.closest('#change-ollama-settings')) { e.preventDefault(); promptForSettings(); return; }
+
 
       const homeBtn = target.closest('.popup-home-btn') as HTMLElement | null;
       if (homeBtn) { this.setHome(parseInt(homeBtn.dataset.homeIndex!, 10)); this.openDetailMode(parseInt(homeBtn.dataset.homeIndex!, 10)); }
@@ -199,19 +207,23 @@ export class UIController {
             this.clearMapClickHandler();
             const endLatLng = e2.latlng;
 
+            const defaultWidth = 15;
             const detection = detectFromEndpoints(
               wp, composite,
               startLatLng.lat, startLatLng.lng,
               endLatLng.lat, endLatLng.lng,
-              30, // default 30m width
+              defaultWidth,
             );
             this.lastDetectionOutput = { detection, composite };
+            this.lastStripEndpoints = {
+              waypointIndex, lat1: startLatLng.lat, lon1: startLatLng.lng,
+              lat2: endLatLng.lat, lon2: endLatLng.lng,
+            };
 
-            // Save for persistence
             saveStrip(wp.lat, wp.lon, {
               lat1: startLatLng.lat, lon1: startLatLng.lng,
               lat2: endLatLng.lat, lon2: endLatLng.lng,
-              widthM: 30,
+              widthM: defaultWidth,
             });
 
             container.innerHTML = buildDetectionResultHtml(detection, waypointIndex);
@@ -228,6 +240,25 @@ export class UIController {
       container.innerHTML = `<div class="analysis-error">${msg}</div>`;
       if (detectBtn) { detectBtn.disabled = false; detectBtn.textContent = hasRunway(wp) ? 'Place Runway' : 'Draw Landing Strip'; }
     }
+  }
+
+  private updateStripWidth(widthM: number): void {
+    if (!this.lastStripEndpoints || !this.pendingComposite || widthM < 1) return;
+    const { waypointIndex, lat1, lon1, lat2, lon2 } = this.lastStripEndpoints;
+    const wp = this.waypoints[waypointIndex];
+    const composite = this.pendingComposite.composite;
+
+    const detection = detectFromEndpoints(wp, composite, lat1, lon1, lat2, lon2, widthM);
+    this.lastDetectionOutput = { detection, composite };
+
+    saveStrip(wp.lat, wp.lon, { lat1, lon1, lat2, lon2, widthM });
+
+    // Update width display
+    const widthDisplay = document.getElementById('strip-width-display');
+    if (widthDisplay) widthDisplay.textContent = fmtShortDist(widthM);
+
+    // Redraw overlays
+    try { this.drawDetectionOverlays(this.lastDetectionOutput); } catch (e) { console.warn(e); }
   }
 
   private clearMapClickHandler(): void {

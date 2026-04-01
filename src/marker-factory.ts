@@ -200,8 +200,11 @@ export function buildDetectionResultHtml(det: FieldDetection, waypointIndex: num
   const tooShort = det.lengthM > 0 && det.lengthM < MIN_LENGTH_M;
   html += `<div class="analysis-field">`;
   html += `<div class="analysis-field-header">Detected Landing Strip</div>`;
-  html += `<div class="analysis-field-value">${fmtShortDist(det.lengthM)} &times; ${fmtShortDist(det.widthM)}</div>`;
+  html += `<div class="analysis-field-value">${fmtShortDist(det.lengthM)} &times; <span id="strip-width-display">${fmtShortDist(det.widthM)}</span></div>`;
   html += `<div class="analysis-field-detail">Orientation: ${det.orientationDeg}&deg; &bull; Area: ${Math.round(det.areaSqM / 10000 * 10) / 10} ha</div>`;
+  if (det.endpoint1 && det.endpoint2) {
+    html += `<div class="analysis-field-detail" style="display:flex;align-items:center;gap:6px;margin-top:4px">Width: <input type="range" id="strip-width-input" min="5" max="100" value="${det.widthM}" style="flex:1;accent-color:#f59e0b"> <span style="min-width:35px">${det.widthM}m</span></div>`;
+  }
   if (tooShort) {
     html += `<div class="analysis-error" style="margin-top:4px">&#9888; Below minimum 1000 ft (${fmtShortDist(MIN_LENGTH_M)}) landing length</div>`;
   }

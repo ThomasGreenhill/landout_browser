@@ -87,8 +87,7 @@ export async function compositeTiles(
     }
   });
 
-  // Draw crosshair at the exact waypoint position
-  // Calculate pixel offset of the waypoint within the canvas
+  // Calculate waypoint pixel position in the canvas
   const n = Math.pow(2, zoom);
   const wpPixelX = (((lon + 180) / 360) * n - (center.x - half)) * TILE_SIZE;
   const latRad = (lat * Math.PI) / 180;
@@ -97,32 +96,26 @@ export async function compositeTiles(
       (center.y - half)) *
     TILE_SIZE;
 
-  ctx.strokeStyle = '#ef4444';
-  ctx.lineWidth = 2;
-  const crossSize = 16;
+  // NOTE: crosshair is drawn only on the downscaled display image, NOT on
+  // the full-res canvas — so CV field detection works on clean satellite pixels
 
-  ctx.beginPath();
-  ctx.moveTo(wpPixelX - crossSize, wpPixelY);
-  ctx.lineTo(wpPixelX + crossSize, wpPixelY);
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.moveTo(wpPixelX, wpPixelY - crossSize);
-  ctx.lineTo(wpPixelX, wpPixelY + crossSize);
-  ctx.stroke();
-
-  // Small circle around crosshair
-  ctx.beginPath();
-  ctx.arc(wpPixelX, wpPixelY, crossSize * 0.6, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // Downscale to 640x640 for faster AI processing
+  // Downscale to 640x640 for AI display image, with crosshair
   const outSize = 640;
   const outCanvas = document.createElement('canvas');
   outCanvas.width = outSize;
   outCanvas.height = outSize;
   const outCtx = outCanvas.getContext('2d')!;
   outCtx.drawImage(canvas, 0, 0, canvasSize, canvasSize, 0, 0, outSize, outSize);
+
+  // Draw crosshair on display image only
+  const scale = outSize / canvasSize;
+  outCtx.strokeStyle = '#ef4444';
+  outCtx.lineWidth = 2;
+  const crossSize = 12;
+  const sx = wpPixelX * scale, sy = wpPixelY * scale;
+  outCtx.beginPath(); outCtx.moveTo(sx - crossSize, sy); outCtx.lineTo(sx + crossSize, sy); outCtx.stroke();
+  outCtx.beginPath(); outCtx.moveTo(sx, sy - crossSize); outCtx.lineTo(sx, sy + crossSize); outCtx.stroke();
+  outCtx.beginPath(); outCtx.arc(sx, sy, crossSize * 0.6, 0, Math.PI * 2); outCtx.stroke();
 
   let dataUrl: string;
   try {

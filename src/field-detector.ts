@@ -47,16 +47,16 @@ function isFieldPixel(r: number, g: number, b: number): boolean {
   const { h, s, l } = rgbToHsl(r, g, b);
 
   // Too dark (shadows, water, dense trees) or too bright (buildings, concrete)
-  if (l < 0.12 || l > 0.88) return false;
+  if (l < 0.10 || l > 0.92) return false;
 
-  // Green vegetation — grass, crops
-  if (h >= 50 && h <= 170 && s > 0.08 && l >= 0.15 && l <= 0.75) return true;
+  // Green vegetation — grass, crops (wide range)
+  if (h >= 40 && h <= 180 && s > 0.05 && l >= 0.12 && l <= 0.80) return true;
 
-  // Brown/tan — dry grass, stubble, bare earth
-  if (h >= 20 && h <= 55 && l >= 0.20 && l <= 0.70) return true;
+  // Brown/tan/yellow — dry grass, stubble, bare earth, sand
+  if (h >= 15 && h <= 60 && l >= 0.15 && l <= 0.85) return true;
 
-  // Muted/unsaturated earth tones
-  if (s < 0.35 && l >= 0.25 && l <= 0.65) return true;
+  // Muted/unsaturated earth tones (covers pale/sandy fields)
+  if (s < 0.40 && l >= 0.20 && l <= 0.80) return true;
 
   return false;
 }
@@ -84,6 +84,10 @@ function classifyObstruction(r: number, g: number, b: number): 'trees' | 'buildi
 
 // --- Region growing ---
 
+/**
+ * Flood fill on a downsampled grid for performance.
+ * Works on every Nth pixel, then fills the full mask.
+ */
 function floodFillField(
   data: Uint8ClampedArray,
   width: number,
@@ -91,48 +95,75 @@ function floodFillField(
   startX: number,
   startY: number,
 ): Uint8Array {
-  const mask = new Uint8Array(width * height); // 1 = field
-  const stack: number[] = [];
-  const idx = startY * width + startX;
+  // Work on a downsampled grid (every 4th pixel) for speed
+  const S = 4;
+  const gw = Math.ceil(width / S);
+  const gh = Math.ceil(height / S);
+  const grid = new Uint8Array(gw * gh); // 1=field pixel in grid
 
-  if (!isFieldPixel(data[idx * 4], data[idx * 4 + 1], data[idx * 4 + 2])) {
-    // Start point isn't a field pixel — search nearby for one
+  // Classify the grid
+  for (let gy = 0; gy < gh; gy++) {
+    for (let gx = 0; gx < gw; gx++) {
+      const px = gx * S, py = gy * S;
+      const pi = (py * width + px) * 4;
+      if (isFieldPixel(data[pi], data[pi + 1], data[pi + 2])) {
+        grid[gy * gw + gx] = 1;
+      }
+    }
+  }
+
+  // Find start in grid space
+  let gsx = Math.round(startX / S), gsy = Math.round(startY / S);
+  gsx = Math.min(Math.max(gsx, 0), gw - 1);
+  gsy = Math.min(Math.max(gsy, 0), gh - 1);
+
+  // If start isn't a field pixel, search outward
+  if (!grid[gsy * gw + gsx]) {
     let found = false;
-    for (let r = 1; r < 30 && !found; r++) {
+    for (let r = 1; r < 50 && !found; r++) {
       for (let dy = -r; dy <= r && !found; dy++) {
         for (let dx = -r; dx <= r && !found; dx++) {
-          const nx = startX + dx, ny = startY + dy;
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-          const ni = ny * width + nx;
-          if (isFieldPixel(data[ni * 4], data[ni * 4 + 1], data[ni * 4 + 2])) {
-            stack.push(ni);
-            mask[ni] = 1;
-            found = true;
+          const nx = gsx + dx, ny = gsy + dy;
+          if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+          if (grid[ny * gw + nx]) {
+            gsx = nx; gsy = ny; found = true;
           }
         }
       }
     }
-    if (!found) return mask;
-  } else {
-    stack.push(idx);
-    mask[idx] = 1;
+    if (!found) return new Uint8Array(width * height);
   }
 
-  // Flood fill with step size for performance (check every 2nd pixel)
-  const step = 2;
+  // Flood fill on grid
+  const visited = new Uint8Array(gw * gh);
+  const stack: number[] = [gsy * gw + gsx];
+  visited[gsy * gw + gsx] = 1;
+
   while (stack.length > 0) {
     const ci = stack.pop()!;
-    const cx = ci % width;
-    const cy = (ci - cx) / width;
-
-    for (const [dx, dy] of [[step, 0], [-step, 0], [0, step], [0, -step], [step, step], [-step, -step], [step, -step], [-step, step]]) {
+    const cx = ci % gw;
+    const cy = (ci - cx) / gw;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const nx = cx + dx, ny = cy + dy;
-      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-      const ni = ny * width + nx;
-      if (mask[ni]) continue;
-      if (isFieldPixel(data[ni * 4], data[ni * 4 + 1], data[ni * 4 + 2])) {
-        mask[ni] = 1;
-        stack.push(ni);
+      if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+      const ni = ny * gw + nx;
+      if (visited[ni] || !grid[ni]) continue;
+      visited[ni] = 1;
+      stack.push(ni);
+    }
+  }
+
+  // Expand back to full resolution mask
+  const mask = new Uint8Array(width * height);
+  for (let gy = 0; gy < gh; gy++) {
+    if (!visited[gy * gw]) continue;
+    for (let gx = 0; gx < gw; gx++) {
+      if (!visited[gy * gw + gx]) continue;
+      // Fill the S×S block
+      for (let dy = 0; dy < S && gy * S + dy < height; dy++) {
+        for (let dx = 0; dx < S && gx * S + dx < width; dx++) {
+          mask[(gy * S + dy) * width + (gx * S + dx)] = 1;
+        }
       }
     }
   }
@@ -359,8 +390,8 @@ export function detectField(
   const boundaryPoints: Array<{ x: number; y: number }> = [];
   let fieldPixelCount = 0;
 
-  for (let y = 0; y < height; y += 2) {
-    for (let x = 0; x < width; x += 2) {
+  for (let y = 0; y < height; y += 4) {
+    for (let x = 0; x < width; x += 4) {
       if (!mask[y * width + x]) continue;
       fieldPixelCount++;
 
@@ -419,7 +450,7 @@ export function detectField(
     outputHull = outputHull.filter((_, i) => i % step === 0);
   }
 
-  const areaSqM = fieldPixelCount * 4 * metersPerPx * metersPerPx; // *4 because we step by 2
+  const areaSqM = fieldPixelCount * 16 * metersPerPx * metersPerPx; // *16 because we step by 4
 
   return {
     boundaryPixels: outputHull,

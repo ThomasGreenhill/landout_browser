@@ -6,6 +6,7 @@ import { haversineDistance, bearing, cardinalDirection } from './geo-utils';
 import { MapManager } from './map-manager';
 import { createMarkerIcon, buildTooltipText, buildDetailPanelHtml, buildAnalysisResultHtml, getStyleConfig } from './marker-factory';
 import { analyzeLandingSite, promptForSettings } from './landing-analyzer';
+import { fmtShortDist, getUnitSystem, setUnitSystem, UnitSystem, distSliderUnit, kmToSliderVal, sliderValToKm } from './units';
 
 interface MarkerEntry {
   marker: L.Marker;
@@ -226,12 +227,12 @@ export class UIController {
       layer.addLayer(polygon);
 
       // Length tape measure (along runway axis)
-      this.drawTapeLine(layer, rwyEnd1, rwyEnd2, `${area.lengthM}m`, '#3b82f6');
+      this.drawTapeLine(layer, rwyEnd1, rwyEnd2, fmtShortDist(area.lengthM), '#3b82f6');
 
       // Width tape measure (perpendicular, at center)
       const w1 = this.offsetLatLon(wp.lat, wp.lon, halfWid, (orient + 90) % 360);
       const w2 = this.offsetLatLon(wp.lat, wp.lon, halfWid, (orient + 270) % 360);
-      this.drawTapeLine(layer, w1, w2, `${area.widthM}m`, '#f59e0b');
+      this.drawTapeLine(layer, w1, w2, fmtShortDist(area.widthM), '#f59e0b');
 
       // Usable length indicator (solid green line, if different from total)
       if (area.usableLengthM > 0 && area.usableLengthM < area.lengthM) {
@@ -414,6 +415,9 @@ export class UIController {
       })
       .join('');
 
+    const curUnits = getUnitSystem();
+    const sliderUnit = distSliderUnit();
+
     this.toolbar.innerHTML = `
       <label>Home:
         <select id="home-select">
@@ -427,8 +431,16 @@ export class UIController {
       <div class="distance-group" id="distance-group" style="display:none">
         <label>Max dist:</label>
         <input type="range" id="distance-slider" min="1" max="200" value="200">
-        <span class="distance-value" id="distance-value">200 km</span>
+        <span class="distance-value" id="distance-value">200 ${sliderUnit}</span>
       </div>
+      <div class="toolbar-divider"></div>
+      <label>Units:
+        <select id="unit-select">
+          <option value="metric" ${curUnits === 'metric' ? 'selected' : ''}>Metric (m/km)</option>
+          <option value="imperial" ${curUnits === 'imperial' ? 'selected' : ''}>Imperial (ft/mi)</option>
+          <option value="aviation" ${curUnits === 'aviation' ? 'selected' : ''}>Aviation (ft/nm)</option>
+        </select>
+      </label>
       <div class="toolbar-divider"></div>
       <span class="toolbar-stats" id="stats-text">${this.waypoints.length} waypoints</span>
       <button class="file-label" id="reload-btn" style="padding:4px 12px;font-size:12px">Load new file</button>
@@ -447,9 +459,22 @@ export class UIController {
 
     document.getElementById('distance-slider')!.addEventListener('input', (e) => {
       const val = parseInt((e.target as HTMLInputElement).value, 10);
-      this.maxDistanceKm = val;
-      document.getElementById('distance-value')!.textContent = `${val} km`;
+      this.maxDistanceKm = sliderValToKm(val);
+      document.getElementById('distance-value')!.textContent = `${val} ${distSliderUnit()}`;
       this.applyFilters();
+    });
+
+    document.getElementById('unit-select')!.addEventListener('change', (e) => {
+      setUnitSystem((e.target as HTMLSelectElement).value as UnitSystem);
+      // Refresh all tooltips and rebuild toolbar to update labels
+      this.refreshTooltips();
+      this.buildToolbar();
+      // Re-select home if set
+      if (this.homeIndex !== null) {
+        const select = document.getElementById('home-select') as HTMLSelectElement;
+        select.value = String(this.homeIndex);
+        document.getElementById('distance-group')!.style.display = 'flex';
+      }
     });
 
     document.getElementById('reload-btn')!.addEventListener('click', () => {
@@ -459,6 +484,15 @@ export class UIController {
       this.mapManager.clearWaypoints();
       this.fileInput.value = '';
     });
+  }
+
+  private refreshTooltips(): void {
+    const home = this.homeIndex !== null ? this.waypoints[this.homeIndex] : null;
+    for (const entry of this.markers) {
+      const isHome = entry.index === this.homeIndex;
+      const info = home && !isHome ? this.computeHomeInfo(entry.waypoint, home) : undefined;
+      entry.marker.setTooltipContent(buildTooltipText(entry.waypoint, info));
+    }
   }
 
   private placeMarkers(): void {
@@ -515,13 +549,14 @@ export class UIController {
       }
     }
 
-    // Update distance slider max
+    // Update distance slider max (convert km to display units)
     const slider = document.getElementById('distance-slider') as HTMLInputElement;
-    const maxVal = Math.ceil(maxDist / 10) * 10;
-    slider.max = String(Math.max(maxVal, 10));
+    const maxDisplayVal = Math.max(kmToSliderVal(maxDist), 10);
+    const roundedMax = Math.ceil(maxDisplayVal / 10) * 10;
+    slider.max = String(roundedMax);
     slider.value = slider.max;
-    this.maxDistanceKm = maxVal;
-    document.getElementById('distance-value')!.textContent = `${slider.max} km`;
+    this.maxDistanceKm = sliderValToKm(roundedMax);
+    document.getElementById('distance-value')!.textContent = `${roundedMax} ${distSliderUnit()}`;
 
     this.applyFilters();
     this.mapManager.map.closePopup();

@@ -1,4 +1,5 @@
 import L from 'leaflet';
+import { fmtMeasure } from './units';
 
 export class MapManager {
   readonly map: L.Map;
@@ -32,6 +33,29 @@ export class MapManager {
       { maxZoom: 19, pane: 'overlayPane' },
     );
 
+    // FAA VFR Sectional Charts (US coverage)
+    const vfrSectional = L.tileLayer(
+      'https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/VFR_Sectional/MapServer/tile/{z}/{y}/{x}',
+      {
+        maxZoom: 12,
+        minZoom: 5,
+        opacity: 0.7,
+        attribution: 'VFR Sectional &copy; FAA',
+        pane: 'overlayPane',
+      },
+    );
+
+    // OpenAIP airspace overlay (worldwide)
+    const openAip = L.tileLayer(
+      'https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=public',
+      {
+        maxZoom: 14,
+        opacity: 0.6,
+        attribution: '&copy; <a href="https://www.openaip.net">OpenAIP</a>',
+        pane: 'overlayPane',
+      },
+    );
+
     satellite.addTo(this.map);
     labels.addTo(this.map);
 
@@ -42,7 +66,11 @@ export class MapManager {
 
     L.control.layers(
       { 'Satellite': satellite },
-      { 'Place names': labels },
+      {
+        'Place names': labels,
+        'VFR Sectional (US)': vfrSectional,
+        'OpenAIP Airspace': openAip,
+      },
     ).addTo(this.map);
 
     this.setupMeasureTool();
@@ -175,10 +203,7 @@ export class MapManager {
   }
 
   private formatDistance(meters: number): string {
-    if (meters >= 1000) {
-      return `${(meters / 1000).toFixed(2)} km`;
-    }
-    return `${Math.round(meters)} m`;
+    return fmtMeasure(meters);
   }
 
   private showMeasureHint(text: string): void {

@@ -194,6 +194,8 @@ export function detectFromEndpoints(
   return {
     boundaryPixels: corners,
     centerPixel: centerPx,
+    endpoint1: { lat: lat1, lon: lon1 },
+    endpoint2: { lat: lat2, lon: lon2 },
     lengthM: strip.lengthM,
     widthM,
     orientationDeg: strip.orientationDeg,

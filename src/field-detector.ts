@@ -6,6 +6,9 @@
 export interface FieldDetection {
   boundaryPixels: Array<{ x: number; y: number }>;
   centerPixel: { x: number; y: number };
+  /** Original endpoint lat/lons (for two-click strips) */
+  endpoint1?: { lat: number; lon: number };
+  endpoint2?: { lat: number; lon: number };
   lengthM: number;
   widthM: number;
   orientationDeg: number;

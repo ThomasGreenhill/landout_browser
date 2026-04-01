@@ -314,18 +314,34 @@ export class UIController {
       }));
     }
 
-    if (detection.lengthM > 10 && detection.widthM > 5) {
-      const center = p2ll(detection.centerPixel.x, detection.centerPixel.y);
-      const orient = detection.orientationDeg;
-      const halfLen = detection.lengthM / 2, halfWid = detection.widthM / 2;
-
-      const end1 = this.offsetLatLon(center.lat, center.lon, halfLen, orient);
-      const end2 = this.offsetLatLon(center.lat, center.lon, halfLen, (orient + 180) % 360);
+    if (detection.lengthM > 10) {
+      // Use actual endpoints if available, otherwise compute from center
+      let end1: L.LatLngTuple, end2: L.LatLngTuple;
+      if (detection.endpoint1 && detection.endpoint2) {
+        end1 = [detection.endpoint1.lat, detection.endpoint1.lon];
+        end2 = [detection.endpoint2.lat, detection.endpoint2.lon];
+      } else {
+        const center = p2ll(detection.centerPixel.x, detection.centerPixel.y);
+        const orient = detection.orientationDeg;
+        const halfLen = detection.lengthM / 2;
+        end1 = this.offsetLatLon(center.lat, center.lon, halfLen, orient);
+        end2 = this.offsetLatLon(center.lat, center.lon, halfLen, (orient + 180) % 360);
+      }
       this.drawTapeLine(layer, end1, end2, fmtShortDist(detection.lengthM), '#3b82f6');
 
-      const w1 = this.offsetLatLon(center.lat, center.lon, halfWid, (orient + 90) % 360);
-      const w2 = this.offsetLatLon(center.lat, center.lon, halfWid, (orient + 270) % 360);
-      this.drawTapeLine(layer, w1, w2, fmtShortDist(detection.widthM), '#f59e0b');
+      // Width tape at midpoint
+      if (detection.widthM > 5) {
+        const midLat = (end1[0] + end2[0]) / 2, midLon = (end1[1] + end2[1]) / 2;
+        const orient = detection.orientationDeg;
+        const halfWid = detection.widthM / 2;
+        const w1 = this.offsetLatLon(midLat, midLon, halfWid, (orient + 90) % 360);
+        const w2 = this.offsetLatLon(midLat, midLon, halfWid, (orient + 270) % 360);
+        this.drawTapeLine(layer, w1, w2, fmtShortDist(detection.widthM), '#f59e0b');
+      }
+
+      // Endpoint markers
+      layer.addLayer(L.circleMarker(end1, { radius: 5, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 2 }));
+      layer.addLayer(L.circleMarker(end2, { radius: 5, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 2 }));
     }
 
     if (allPoints.length > 1) {

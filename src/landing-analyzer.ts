@@ -1,7 +1,6 @@
 import { Waypoint } from './types';
 import { AnalysisResult } from './analysis-types';
 import { compositeTiles } from './tile-compositer';
-import { getStyleConfig } from './marker-factory';
 
 const OLLAMA_URL_KEY = 'landout-ollama-url';
 const OLLAMA_MODEL_KEY = 'landout-ollama-model';
@@ -129,19 +128,17 @@ function buildPrompt(
   _metersPerPx: number,
   totalWidthM: number,
 ): string {
-  const styleLabel = getStyleConfig(wp.style).label;
+  const imgSize = 640;
+  const mPerPx = (totalWidthM / imgSize).toFixed(1);
 
-  const imgSize = 640; // downscaled output size
+  return `Look at this satellite image. Red crosshair marks a glider landing waypoint "${wp.name}".
+Image scale: ${mPerPx} meters per pixel. Image is ${imgSize}px wide, covering ${Math.round(totalWidthM)}m total. Center is pixel (${imgSize / 2},${imgSize / 2}). North=up.${wp.rwdir ? ` Listed runway: ${wp.rwdir}°, ${wp.rwlen}m.` : ''}
 
-  return `Analyze this satellite image of a glider landing field. Red crosshair = waypoint. Scale: ${(totalWidthM / imgSize).toFixed(1)} m/pixel, image is ${imgSize}px (~${Math.round(totalWidthM)}m). North is up. Center pixel: (${imgSize / 2},${imgSize / 2}).
+Describe what you see: How long and wide is the landable field in meters? Use the scale: measure pixels and multiply by ${mPerPx}. What is the surface? List obstructions. Where is the field center in pixels? Rate suitability 1-5.
 
-Waypoint: "${wp.name}" (${styleLabel}), ${Math.round(wp.elev)}m elev.${wp.rwdir ? ` RWY ${wp.rwdir}°/${wp.rwlen}m.` : ''}
-
-Briefly describe: field dimensions, surface type, obstructions, best approach, and rate 1-5.
-
-Then provide this JSON (replace values with your analysis):
+End with a JSON block:
 \`\`\`json
-{"landableArea":{"lengthM":450,"widthM":80,"orientationDeg":270,"usableLengthM":400,"centerPixel":{"x":680,"y":610}},"surface":{"primary":"grass","confidence":"medium","notes":"mowed"},"obstructions":[{"type":"trees","location":"east","severity":"moderate","description":"tree line"}],"approach":{"bestDirection":"from west","hazards":["trees east"],"notes":"clear west"},"suitability":{"rating":4,"summary":"Good field."}}
+{"landableArea":{"lengthM":LENGTH,"widthM":WIDTH,"orientationDeg":HEADING,"usableLengthM":USABLE,"centerPixel":{"x":CX,"y":CY}},"surface":{"primary":"TYPE","confidence":"CONF","notes":"NOTES"},"obstructions":[{"type":"TYPE","location":"WHERE","severity":"SEV","description":"DESC"}],"approach":{"bestDirection":"DIR","hazards":["HAZ"],"notes":"NOTES"},"suitability":{"rating":N,"summary":"TEXT"}}
 \`\`\``;
 }
 

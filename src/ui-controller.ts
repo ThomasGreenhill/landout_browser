@@ -188,6 +188,21 @@ export class UIController {
     return [(lat2 * 180) / Math.PI, (lon2 * 180) / Math.PI];
   }
 
+  /**
+   * Safely convert pixel coords to lat/lon, returning null if result is NaN.
+   */
+  private safePixelToLatLon(
+    pixelToLatLon: (px: number, py: number) => { lat: number; lon: number },
+    px: number, py: number,
+  ): L.LatLngTuple | null {
+    const x = Number(px);
+    const y = Number(py);
+    if (!isFinite(x) || !isFinite(y) || x <= 0 || y <= 0) return null;
+    const p = pixelToLatLon(x, y);
+    if (!isFinite(p.lat) || !isFinite(p.lon)) return null;
+    return [p.lat, p.lon];
+  }
+
   private drawAnalysisOverlays(
     wp: Waypoint,
     result: AnalysisResult,
@@ -196,14 +211,16 @@ export class UIController {
     const layer = this.mapManager.detailLayer;
     const area = result.landableArea;
 
-    // Determine the actual field center — use AI-reported pixel center if available,
+    // Determine the actual field center — use AI-reported pixel center if valid,
     // otherwise fall back to waypoint location
     let fieldLat = wp.lat;
     let fieldLon = wp.lon;
-    if (area.centerPixel && area.centerPixel.x > 0 && area.centerPixel.y > 0) {
-      const fieldCenter = pixelToLatLon(area.centerPixel.x, area.centerPixel.y);
-      fieldLat = fieldCenter.lat;
-      fieldLon = fieldCenter.lon;
+    if (area.centerPixel) {
+      const center = this.safePixelToLatLon(pixelToLatLon, area.centerPixel.x, area.centerPixel.y);
+      if (center) {
+        fieldLat = center[0];
+        fieldLon = center[1];
+      }
     }
 
     // Collect all overlay points so we can fit the map to show them
@@ -265,9 +282,11 @@ export class UIController {
       for (let i = 0; i < result.obstructions.length; i++) {
         const obs = result.obstructions[i];
         let pos: L.LatLngTuple;
-        if (obs.pixelPos && obs.pixelPos.x > 0 && obs.pixelPos.y > 0) {
-          const p = pixelToLatLon(obs.pixelPos.x, obs.pixelPos.y);
-          pos = [p.lat, p.lon];
+        const pixelPos = obs.pixelPos
+          ? this.safePixelToLatLon(pixelToLatLon, obs.pixelPos.x, obs.pixelPos.y)
+          : null;
+        if (pixelPos) {
+          pos = pixelPos;
         } else {
           const angle = this.locationToAngle(obs.location, i, result.obstructions.length);
           pos = this.offsetLatLon(fieldLat, fieldLon, fieldRadius, angle);

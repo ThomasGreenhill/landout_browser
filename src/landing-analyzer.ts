@@ -157,24 +157,25 @@ Analyze this landing site carefully:
 
 5. SUITABILITY: Rate honestly from 1-5. 1=unusable, 2=emergency only with damage risk, 3=marginal but landable, 4=good field, 5=excellent/airstrip quality. Do NOT default to 3 — actually assess the field.
 
-After your text analysis, you MUST provide this JSON block:
+After your text analysis, you MUST provide a JSON block. Use real numbers, not placeholders. Example:
 \`\`\`json
 {
   "landableArea": {
-    "lengthM": <calculated from pixel distance * ${metersPerPx.toFixed(2)}>,
-    "widthM": <calculated from pixel distance * ${metersPerPx.toFixed(2)}>,
-    "orientationDeg": <runway heading 0-359, north=0>,
-    "usableLengthM": <length minus obstacle encroachment>,
-    "centerPixel": {"x": <pixel x of field center>, "y": <pixel y of field center>}
+    "lengthM": 450,
+    "widthM": 80,
+    "orientationDeg": 270,
+    "usableLengthM": 400,
+    "centerPixel": {"x": 680, "y": 610}
   },
-  "surface": {"primary": "<type>", "confidence": "<high|medium|low>", "notes": "<details>"},
+  "surface": {"primary": "grass", "confidence": "medium", "notes": "appears mowed recently"},
   "obstructions": [
-    {"type": "<type>", "location": "<description>", "severity": "<minor|moderate|critical>", "description": "<details>", "pixelPos": {"x": <pixel>, "y": <pixel>}}
+    {"type": "trees", "location": "east boundary", "severity": "moderate", "description": "tree line 15m tall", "pixelPos": {"x": 900, "y": 640}}
   ],
-  "approach": {"bestDirection": "<direction>", "hazards": ["<hazard>"], "notes": "<details>"},
-  "suitability": {"rating": <1-5>, "summary": "<one sentence>"}
+  "approach": {"bestDirection": "from the west on heading 090", "hazards": ["trees on east side"], "notes": "clear approach from west"},
+  "suitability": {"rating": 4, "summary": "Good field with clear approaches from the west."}
 }
-\`\`\``;
+\`\`\`
+Replace ALL values with your actual analysis. The centerPixel must be the pixel (x,y) of the field center in the image. Remember: image center is (${imgSize / 2},${imgSize / 2}).`;
 }
 
 function tryParseJson(text: string): Record<string, unknown> | null {

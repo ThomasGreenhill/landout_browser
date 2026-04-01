@@ -207,12 +207,11 @@ export class UIController {
             this.clearMapClickHandler();
             const endLatLng = e2.latlng;
 
-            const defaultWidth = 15;
             const detection = detectFromEndpoints(
               wp, composite,
               startLatLng.lat, startLatLng.lng,
               endLatLng.lat, endLatLng.lng,
-              defaultWidth,
+              // no width override — auto-detect from pixels
             );
             this.lastDetectionOutput = { detection, composite };
             this.lastStripEndpoints = {
@@ -223,7 +222,7 @@ export class UIController {
             saveStrip(wp.lat, wp.lon, {
               lat1: startLatLng.lat, lon1: startLatLng.lng,
               lat2: endLatLng.lat, lon2: endLatLng.lng,
-              widthM: defaultWidth,
+              widthM: detection.widthM,
             });
 
             container.innerHTML = buildDetectionResultHtml(detection, waypointIndex);

@@ -182,6 +182,109 @@ function offsetLatLon(lat: number, lon: number, distM: number, bearingDeg: numbe
   return [(lat2 * 180) / Math.PI, (lon2 * 180) / Math.PI];
 }
 
+// --- Width auto-detection ---
+
+/**
+ * Detect strip width by scanning perpendicular cross-sections along the strip.
+ * At each sample point, walks outward from the centerline in both perpendicular
+ * directions until it finds a color edge (sharp RGB change from the strip surface).
+ * Returns the median detected width across all samples.
+ */
+function detectStripWidth(
+  canvas: HTMLCanvasElement,
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  numSamples = 7,
+): number {
+  const ctx = canvas.getContext('2d')!;
+  const { width, height } = canvas;
+  const data = ctx.getImageData(0, 0, width, height).data;
+
+  // Strip direction in pixels
+  const dx = p2.x - p1.x, dy = p2.y - p1.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len < 5) return 0;
+
+  // Perpendicular direction (unit vector)
+  const perpX = -dy / len, perpY = dx / len;
+
+  const edgeThreshold = 30; // RGB distance for edge detection
+  const maxScanPx = 150; // max scan distance in pixels per side
+  const step = 2;
+
+  const widths: number[] = [];
+
+  for (let i = 0; i < numSamples; i++) {
+    // Sample point along the strip (skip 10% at each end to avoid runway markings)
+    const t = 0.1 + (i / (numSamples - 1)) * 0.8;
+    const cx = Math.round(p1.x + dx * t);
+    const cy = Math.round(p1.y + dy * t);
+    if (cx < 3 || cy < 3 || cx >= width - 3 || cy >= height - 3) continue;
+
+    // Sample the centerline color
+    const ci = (cy * width + cx) * 4;
+    let seedR = data[ci], seedG = data[ci + 1], seedB = data[ci + 2];
+
+    // Average a small patch for noise reduction
+    let tr = 0, tg = 0, tb = 0, tc = 0;
+    for (let ky = -2; ky <= 2; ky++) {
+      for (let kx = -2; kx <= 2; kx++) {
+        const pi = ((cy + ky) * width + (cx + kx)) * 4;
+        if (pi >= 0 && pi < data.length - 3) { tr += data[pi]; tg += data[pi+1]; tb += data[pi+2]; tc++; }
+      }
+    }
+    if (tc > 0) { seedR = tr / tc; seedG = tg / tc; seedB = tb / tc; }
+
+    // Scan left (positive perpendicular)
+    let leftDist = 0;
+    let prevR = seedR, prevG = seedG, prevB = seedB;
+    for (let d = step; d < maxScanPx; d += step) {
+      const sx = Math.round(cx + perpX * d), sy = Math.round(cy + perpY * d);
+      if (sx < 1 || sy < 1 || sx >= width - 1 || sy >= height - 1) break;
+      const si = (sy * width + sx) * 4;
+      const r = data[si], g = data[si + 1], b = data[si + 2];
+      // Check for edge: sharp jump from previous sample
+      const jumpFromPrev = Math.sqrt((r - prevR) ** 2 + (g - prevG) ** 2 + (b - prevB) ** 2);
+      // Also check drift from seed
+      const jumpFromSeed = Math.sqrt((r - seedR) ** 2 + (g - seedG) ** 2 + (b - seedB) ** 2);
+      if (jumpFromPrev > edgeThreshold || jumpFromSeed > edgeThreshold * 1.5) {
+        leftDist = d;
+        break;
+      }
+      prevR = r; prevG = g; prevB = b;
+      leftDist = d;
+    }
+
+    // Scan right (negative perpendicular)
+    let rightDist = 0;
+    prevR = seedR; prevG = seedG; prevB = seedB;
+    for (let d = step; d < maxScanPx; d += step) {
+      const sx = Math.round(cx - perpX * d), sy = Math.round(cy - perpY * d);
+      if (sx < 1 || sy < 1 || sx >= width - 1 || sy >= height - 1) break;
+      const si = (sy * width + sx) * 4;
+      const r = data[si], g = data[si + 1], b = data[si + 2];
+      const jumpFromPrev = Math.sqrt((r - prevR) ** 2 + (g - prevG) ** 2 + (b - prevB) ** 2);
+      const jumpFromSeed = Math.sqrt((r - seedR) ** 2 + (g - seedG) ** 2 + (b - seedB) ** 2);
+      if (jumpFromPrev > edgeThreshold || jumpFromSeed > edgeThreshold * 1.5) {
+        rightDist = d;
+        break;
+      }
+      prevR = r; prevG = g; prevB = b;
+      rightDist = d;
+    }
+
+    if (leftDist > 2 && rightDist > 2) {
+      widths.push(leftDist + rightDist);
+    }
+  }
+
+  if (widths.length === 0) return 0;
+
+  // Return median width (robust against outliers from taxiways, aprons etc)
+  widths.sort((a, b) => a - b);
+  return widths[Math.floor(widths.length / 2)];
+}
+
 // --- Detection from two endpoints (user-drawn) ---
 
 export function detectFromEndpoints(
@@ -189,11 +292,20 @@ export function detectFromEndpoints(
   composite: CompositeResult,
   lat1: number, lon1: number,
   lat2: number, lon2: number,
-  widthM = 30,
+  widthOverrideM?: number,
 ): FieldDetection {
-  const strip = computeStripFromEndpoints(lat1, lon1, lat2, lon2, widthM);
+  const strip = computeStripFromEndpoints(lat1, lon1, lat2, lon2, 0);
 
-  // Build corners in lat/lon space using geodesic perpendicular offsets
+  // Auto-detect width from satellite image pixels
+  const p1px = composite.latLonToPixel(lat1, lon1);
+  const p2px = composite.latLonToPixel(lat2, lon2);
+  const detectedWidthPx = detectStripWidth(composite.canvas, p1px, p2px);
+  const detectedWidthM = Math.round(detectedWidthPx * composite.metersPerPx);
+
+  // Use override if provided, otherwise auto-detected, with minimum of 5m
+  const widthM = widthOverrideM ?? Math.max(detectedWidthM, 5);
+
+  // Build corners in lat/lon space
   const halfWid = widthM / 2;
   const bearing = strip.orientationDeg;
   const c1 = offsetLatLon(lat1, lon1, halfWid, (bearing + 90) % 360);
@@ -203,9 +315,7 @@ export function detectFromEndpoints(
   const cornerLatLons: Array<[number, number]> = [c1, c2, c3, c4];
 
   const cornerPixels = cornerLatLons.map(c => composite.latLonToPixel(c[0], c[1]));
-  const p1 = composite.latLonToPixel(lat1, lon1);
-  const p2 = composite.latLonToPixel(lat2, lon2);
-  const centerPx = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+  const centerPx = { x: (p1px.x + p2px.x) / 2, y: (p1px.y + p2px.y) / 2 };
 
   return {
     boundaryPixels: cornerPixels,

@@ -1,6 +1,6 @@
 import L from 'leaflet';
 import { Waypoint, WaypointStyle, HomeInfo } from './types';
-import { FieldDetection } from './field-detector';
+import { FieldDetection, parseDescriptionHints } from './field-detector';
 import { fmtElev, fmtShortDist, fmtDist } from './units';
 
 const STYLE_CONFIG: Record<number, { css: string; label: string; size: number }> = {
@@ -168,9 +168,22 @@ export function buildDetailPanelHtml(wp: Waypoint, index: number, homeInfo?: Hom
     html += `<div class="detail-desc">${escapeHtml(wp.desc)}</div>`;
   }
 
+  // Description hints for outlandings
+  const hints = parseDescriptionHints(wp.desc);
+  if (hints.headings || hints.lengthFt || hints.notes.length > 0) {
+    html += `<div class="analysis-field" style="background:rgba(59,130,246,0.08);border-radius:8px;padding:8px;margin:8px 0">`;
+    html += `<div class="analysis-field-header">Landing Hints from Description</div>`;
+    if (hints.headings) html += `<div class="analysis-field-value">Headings: ${hints.headings[0]}&deg; / ${hints.headings[1]}&deg;</div>`;
+    if (hints.lengthFt) html += `<div class="analysis-field-value">Length: ~${hints.lengthFt} ft (${hints.lengthM}m)</div>`;
+    for (const note of hints.notes) html += `<div class="analysis-field-detail">${escapeHtml(note)}</div>`;
+    html += `</div>`;
+  }
+
   // Detection section
+  const hasRunway = wp.rwdir > 0 && wp.rwlen > 0;
+  const btnLabel = hasRunway ? 'Place Runway' : 'Draw Landing Strip';
   html += `<div class="detail-analysis-section">`;
-  html += `<button class="detail-analyze-btn" id="detect-btn" data-wp-index="${index}">Detect Field</button>`;
+  html += `<button class="detail-analyze-btn" id="detect-btn" data-wp-index="${index}">${btnLabel}</button>`;
   html += `<div id="analysis-result"></div>`;
   html += `</div>`;
 

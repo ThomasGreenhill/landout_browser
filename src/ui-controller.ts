@@ -4,7 +4,7 @@ import { parseCupFile } from './cup-parser';
 import { haversineDistance, bearing, cardinalDirection } from './geo-utils';
 import { MapManager } from './map-manager';
 import { createMarkerIcon, buildTooltipText, buildDetailPanelHtml, buildDetectionResultHtml, getStyleConfig } from './marker-factory';
-import { fetchTilesForWaypoint, runDetection, getAiDescription, promptForSettings, DetectionOutput, CompositeResult } from './landing-analyzer';
+import { fetchTilesForWaypoint, detectFromRunwayData, detectFromEndpoints, getAiDescription, promptForSettings, DetectionOutput, CompositeResult, getSavedStrip, saveStrip } from './landing-analyzer';
 import { fmtShortDist, getUnitSystem, setUnitSystem, UnitSystem, distSliderUnit, kmToSliderVal, sliderValToKm } from './units';
 import { getElevationProfile } from './terrain';
 
@@ -16,11 +16,7 @@ function formatAiText(text: string): string {
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 }
 
-interface MarkerEntry {
-  marker: L.Marker;
-  waypoint: Waypoint;
-  index: number;
-}
+interface MarkerEntry { marker: L.Marker; waypoint: Waypoint; index: number; }
 
 export class UIController {
   private waypoints: Waypoint[] = [];
@@ -30,7 +26,7 @@ export class UIController {
   private savedView: { center: L.LatLng; zoom: number } | null = null;
   private lastDetectionOutput: DetectionOutput | null = null;
   private pendingComposite: { waypointIndex: number; composite: CompositeResult } | null = null;
-  private seedClickHandler: ((e: L.LeafletMouseEvent) => void) | null = null;
+  private mapClickHandler: ((e: L.LeafletMouseEvent) => void) | null = null;
 
   private readonly overlay: HTMLElement;
   private readonly toolbar: HTMLElement;
@@ -42,7 +38,6 @@ export class UIController {
     this.toolbar = document.getElementById('toolbar')!;
     this.fileInput = document.getElementById('file-input') as HTMLInputElement;
     this.detailPanel = document.getElementById('detail-panel')!;
-
     this.setupFileHandling();
     this.setupPopupDelegation();
     this.setupDetailDelegation();
@@ -53,230 +48,222 @@ export class UIController {
       const file = this.fileInput.files?.[0];
       if (file) this.loadFile(file);
     });
-
-    this.overlay.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    });
-
+    this.overlay.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); });
     this.overlay.addEventListener('drop', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+      e.preventDefault(); e.stopPropagation();
       const file = e.dataTransfer?.files[0];
-      if (file && file.name.toLowerCase().endsWith('.cup')) {
-        this.loadFile(file);
-      }
+      if (file && file.name.toLowerCase().endsWith('.cup')) this.loadFile(file);
     });
   }
 
   private setupPopupDelegation(): void {
     document.getElementById('map')!.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest('.popup-home-btn') as HTMLElement | null;
-      if (btn) {
-        const index = parseInt(btn.dataset.homeIndex!, 10);
-        this.setHome(index);
-      }
+      if (btn) this.setHome(parseInt(btn.dataset.homeIndex!, 10));
     });
   }
 
   private setupDetailDelegation(): void {
     this.detailPanel.addEventListener('click', (e) => {
       const target = e.target as HTMLElement;
-
-      if (target.closest('#detail-back')) {
-        this.exitDetailMode();
-        return;
-      }
+      if (target.closest('#detail-back')) { this.exitDetailMode(); return; }
 
       const detectBtn = target.closest('#detect-btn') as HTMLElement | null;
-      if (detectBtn) {
-        const index = parseInt(detectBtn.dataset.wpIndex!, 10);
-        this.runDetection(index);
-        return;
-      }
+      if (detectBtn) { this.startDetection(parseInt(detectBtn.dataset.wpIndex!, 10)); return; }
 
       const aiBtn = target.closest('#ai-describe-btn') as HTMLElement | null;
-      if (aiBtn) {
-        const index = parseInt(aiBtn.dataset.wpIndex!, 10);
-        this.runAiDescription(index);
-        return;
-      }
+      if (aiBtn) { this.runAiDescription(parseInt(aiBtn.dataset.wpIndex!, 10)); return; }
 
-      const settingsLink = target.closest('#change-ollama-settings');
-      if (settingsLink) {
-        e.preventDefault();
-        promptForSettings();
-        return;
-      }
+      if (target.closest('#change-ollama-settings')) { e.preventDefault(); promptForSettings(); return; }
 
       const homeBtn = target.closest('.popup-home-btn') as HTMLElement | null;
-      if (homeBtn) {
-        const index = parseInt(homeBtn.dataset.homeIndex!, 10);
-        this.setHome(index);
-        this.openDetailMode(index);
-      }
+      if (homeBtn) { this.setHome(parseInt(homeBtn.dataset.homeIndex!, 10)); this.openDetailMode(parseInt(homeBtn.dataset.homeIndex!, 10)); }
     });
   }
 
   private openDetailMode(waypointIndex: number): void {
     const wp = this.waypoints[waypointIndex];
     const home = this.homeIndex !== null ? this.waypoints[this.homeIndex] : null;
-    const homeInfo = home && waypointIndex !== this.homeIndex
-      ? this.computeHomeInfo(wp, home)
-      : undefined;
-
+    const homeInfo = home && waypointIndex !== this.homeIndex ? this.computeHomeInfo(wp, home) : undefined;
     if (!this.savedView) {
-      this.savedView = {
-        center: this.mapManager.map.getCenter(),
-        zoom: this.mapManager.map.getZoom(),
-      };
+      this.savedView = { center: this.mapManager.map.getCenter(), zoom: this.mapManager.map.getZoom() };
     }
-
     this.mapManager.map.setView([wp.lat, wp.lon], 16, { animate: true });
-
     this.mapManager.detailLayer.clearLayers();
     if (home && waypointIndex !== this.homeIndex) {
-      const line = L.polyline(
+      this.mapManager.detailLayer.addLayer(L.polyline(
         [[wp.lat, wp.lon], [home.lat, home.lon]],
         { color: '#ef4444', weight: 2, opacity: 0.7, dashArray: '8, 6' },
-      );
-      this.mapManager.detailLayer.addLayer(line);
+      ));
     }
-
     this.detailPanel.innerHTML = buildDetailPanelHtml(wp, waypointIndex, homeInfo);
     this.detailPanel.classList.remove('hidden');
     this.toolbar.classList.remove('visible');
     this.mapManager.map.closePopup();
+
+    // Check for saved strip and show it immediately
+    const saved = getSavedStrip(wp.lat, wp.lon);
+    if (saved) {
+      this.showSavedStrip(wp, waypointIndex, saved);
+    }
+  }
+
+  private async showSavedStrip(wp: Waypoint, waypointIndex: number, saved: { lat1: number; lon1: number; lat2: number; lon2: number; widthM: number }): Promise<void> {
+    const container = document.getElementById('analysis-result');
+    if (!container) return;
+    let composite: CompositeResult;
+    if (this.pendingComposite && this.pendingComposite.waypointIndex === waypointIndex) {
+      composite = this.pendingComposite.composite;
+    } else {
+      composite = await fetchTilesForWaypoint(wp, () => {});
+      this.pendingComposite = { waypointIndex, composite };
+    }
+    const detection = detectFromEndpoints(wp, composite, saved.lat1, saved.lon1, saved.lat2, saved.lon2, saved.widthM);
+    this.lastDetectionOutput = { detection, composite };
+    container.innerHTML = buildDetectionResultHtml(detection, waypointIndex);
+    try { this.drawDetectionOverlays(this.lastDetectionOutput); } catch (e) { console.warn(e); }
+    this.fetchTerrainProfile(detection, composite);
   }
 
   private exitDetailMode(): void {
-    this.clearSeedHandler();
+    this.clearMapClickHandler();
     this.detailPanel.classList.add('hidden');
     this.toolbar.classList.add('visible');
     this.mapManager.detailLayer.clearLayers();
     this.lastDetectionOutput = null;
     this.pendingComposite = null;
-
     if (this.savedView) {
       this.mapManager.map.setView(this.savedView.center, this.savedView.zoom, { animate: true });
       this.savedView = null;
     }
   }
 
-  // --- Field detection (click-to-seed) ---
+  // --- Landing strip identification ---
 
-  private async runDetection(waypointIndex: number): Promise<void> {
+  private async startDetection(waypointIndex: number): Promise<void> {
     const wp = this.waypoints[waypointIndex];
     const detectBtn = document.getElementById('detect-btn') as HTMLButtonElement | null;
     const container = document.getElementById('analysis-result')!;
-
-    // Clean up any previous seed click handler
-    this.clearSeedHandler();
+    this.clearMapClickHandler();
 
     if (detectBtn) { detectBtn.disabled = true; detectBtn.textContent = 'Fetching tiles...'; }
     container.innerHTML = '<div class="analysis-spinner"></div>';
 
     try {
-      // Fetch tiles (or reuse if already fetched for this waypoint)
       let composite: CompositeResult;
       if (this.pendingComposite && this.pendingComposite.waypointIndex === waypointIndex) {
         composite = this.pendingComposite.composite;
       } else {
-        composite = await fetchTilesForWaypoint(wp, (msg) => {
-          if (detectBtn) detectBtn.textContent = msg;
-        });
+        composite = await fetchTilesForWaypoint(wp, (msg) => { if (detectBtn) detectBtn.textContent = msg; });
         this.pendingComposite = { waypointIndex, composite };
       }
 
-      // Prompt user to click on the landing surface center
       const hasRunway = wp.rwdir > 0 && wp.rwlen > 0;
-      if (detectBtn) { detectBtn.disabled = true; detectBtn.textContent = 'Click on the landing surface...'; }
-      container.innerHTML = `<div class="analysis-field"><div class="analysis-field-header">Click on the center of the landing surface</div><div class="analysis-field-detail">${hasRunway ? 'Click the runway center — we have direction/length from the file but need the exact position.' : 'Click directly on the field/strip you want to analyze.'}</div></div>`;
 
-      // Change cursor
-      this.mapManager.map.getContainer().style.cursor = 'crosshair';
+      if (hasRunway) {
+        // Single-click: place runway center
+        if (detectBtn) { detectBtn.disabled = true; detectBtn.textContent = 'Click runway center on map...'; }
+        container.innerHTML = '<div class="analysis-field"><div class="analysis-field-header">Click the runway center</div><div class="analysis-field-detail">We have heading ' + wp.rwdir + '&deg; and length ' + Math.round(wp.rwlen) + 'm from the file. Click to place the center.</div></div>';
+        this.mapManager.map.getContainer().style.cursor = 'crosshair';
 
-      // Wait for click on map
-      this.seedClickHandler = (e: L.LeafletMouseEvent) => {
-        this.clearSeedHandler();
-        this.executeDetection(wp, composite, e.latlng.lat, e.latlng.lng, waypointIndex);
-      };
-      this.mapManager.map.once('click', this.seedClickHandler);
+        this.mapClickHandler = (e: L.LeafletMouseEvent) => {
+          this.clearMapClickHandler();
+          const detection = detectFromRunwayData(wp, composite, e.latlng.lat, e.latlng.lng);
+          this.lastDetectionOutput = { detection, composite };
+          container.innerHTML = buildDetectionResultHtml(detection, waypointIndex);
+          if (detectBtn) { detectBtn.disabled = false; detectBtn.textContent = 'Re-place Runway'; }
+          try { this.drawDetectionOverlays(this.lastDetectionOutput); } catch (err) { console.warn(err); }
+          this.fetchTerrainProfile(detection, composite);
+        };
+        this.mapManager.map.once('click', this.mapClickHandler);
 
+      } else {
+        // Two-click: draw strip endpoints
+        if (detectBtn) { detectBtn.disabled = true; detectBtn.textContent = 'Click START of landing run...'; }
+        container.innerHTML = '<div class="analysis-field"><div class="analysis-field-header">Click the START of the landing run</div><div class="analysis-field-detail">Click one end of the field or strip on the satellite image.</div></div>';
+        this.mapManager.map.getContainer().style.cursor = 'crosshair';
+
+        this.mapClickHandler = (e: L.LeafletMouseEvent) => {
+          const startLatLng = e.latlng;
+          // Draw a marker at the start point
+          const startMarker = L.circleMarker([startLatLng.lat, startLatLng.lng], {
+            radius: 6, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 2,
+          });
+          this.mapManager.detailLayer.addLayer(startMarker);
+
+          if (detectBtn) detectBtn.textContent = 'Click END of landing run...';
+          container.innerHTML = '<div class="analysis-field"><div class="analysis-field-header">Click the END of the landing run</div><div class="analysis-field-detail">Click the other end of the field or strip.</div></div>';
+
+          // Second click handler
+          this.mapClickHandler = (e2: L.LeafletMouseEvent) => {
+            this.clearMapClickHandler();
+            const endLatLng = e2.latlng;
+
+            const detection = detectFromEndpoints(
+              wp, composite,
+              startLatLng.lat, startLatLng.lng,
+              endLatLng.lat, endLatLng.lng,
+              30, // default 30m width
+            );
+            this.lastDetectionOutput = { detection, composite };
+
+            // Save for persistence
+            saveStrip(wp.lat, wp.lon, {
+              lat1: startLatLng.lat, lon1: startLatLng.lng,
+              lat2: endLatLng.lat, lon2: endLatLng.lng,
+              widthM: 30,
+            });
+
+            container.innerHTML = buildDetectionResultHtml(detection, waypointIndex);
+            if (detectBtn) { detectBtn.disabled = false; detectBtn.textContent = 'Re-draw Strip'; }
+            try { this.drawDetectionOverlays(this.lastDetectionOutput); } catch (err) { console.warn(err); }
+            this.fetchTerrainProfile(detection, composite);
+          };
+          this.mapManager.map.once('click', this.mapClickHandler);
+        };
+        this.mapManager.map.once('click', this.mapClickHandler);
+      }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Detection failed';
+      const msg = err instanceof Error ? err.message : 'Failed';
       container.innerHTML = `<div class="analysis-error">${msg}</div>`;
-      if (detectBtn) { detectBtn.disabled = false; detectBtn.textContent = 'Detect Field'; }
+      if (detectBtn) { detectBtn.disabled = false; detectBtn.textContent = hasRunway(wp) ? 'Place Runway' : 'Draw Landing Strip'; }
     }
   }
 
-  private clearSeedHandler(): void {
-    if (this.seedClickHandler) {
-      this.mapManager.map.off('click', this.seedClickHandler);
-      this.seedClickHandler = null;
+  private clearMapClickHandler(): void {
+    if (this.mapClickHandler) {
+      this.mapManager.map.off('click', this.mapClickHandler);
+      this.mapClickHandler = null;
     }
     this.mapManager.map.getContainer().style.cursor = '';
   }
 
-  private async executeDetection(wp: Waypoint, composite: CompositeResult, seedLat: number, seedLon: number, waypointIndex: number): Promise<void> {
-    const detectBtn = document.getElementById('detect-btn') as HTMLButtonElement | null;
-    const container = document.getElementById('analysis-result')!;
-
-    if (detectBtn) { detectBtn.disabled = true; detectBtn.textContent = 'Detecting...'; }
-    container.innerHTML = '<div class="analysis-spinner"></div>';
-
-    try {
-      const detection = await runDetection(wp, composite, seedLat, seedLon, (msg) => {
-        if (detectBtn) detectBtn.textContent = msg;
-      });
-      this.lastDetectionOutput = { detection, composite };
-
-      container.innerHTML = buildDetectionResultHtml(detection, waypointIndex);
-      if (detectBtn) { detectBtn.disabled = false; detectBtn.textContent = 'Re-detect (click new seed)'; }
-
-      try {
-        this.drawDetectionOverlays(this.lastDetectionOutput);
-      } catch (e) {
-        console.warn('Overlay drawing failed:', e);
-      }
-
-      // Fetch terrain profile async and update the panel
-      if (detection.lengthM > 30) {
-        const terrainEl = document.getElementById('terrain-profile');
-        if (terrainEl) {
-          terrainEl.innerHTML = '<span style="color:rgba(255,255,255,0.4);font-size:11px">Loading terrain...</span>';
-          // Use the detection center pixel → lat/lon for the profile center
-          const center = composite.pixelToLatLon(detection.centerPixel.x, detection.centerPixel.y);
-          getElevationProfile(center.lat, center.lon, detection.orientationDeg, detection.lengthM)
-            .then((profile) => {
-              let html = `<div class="analysis-field-value">${profile.avgSlopePercent}% avg slope, ${profile.maxSlopePercent}% max</div>`;
-              if (!profile.isFlat) {
-                html += `<div class="analysis-error" style="margin-top:2px">&#9888; Terrain may be too sloped (&gt;3%)</div>`;
-              } else {
-                html += `<div class="analysis-field-detail" style="color:#22c55e">Terrain is flat enough for landing</div>`;
-              }
-              // Mini elevation chart
-              const elevs = profile.samples.map(s => s.elevM);
-              const minE = Math.min(...elevs), maxE = Math.max(...elevs);
-              const range = Math.max(maxE - minE, 1);
-              const barHtml = elevs.map(e => {
-                const h = Math.round(((e - minE) / range) * 30 + 2);
-                return `<div style="width:${Math.floor(100 / elevs.length)}%;height:${h}px;background:#3b82f6;border-radius:1px"></div>`;
-              }).join('');
-              html += `<div style="display:flex;align-items:end;gap:1px;height:34px;margin-top:6px">${barHtml}</div>`;
-              html += `<div class="analysis-field-detail">${Math.round(minE)}m — ${Math.round(maxE)}m elev (${Math.round(maxE - minE)}m range)</div>`;
-              terrainEl.innerHTML = html;
-            })
-            .catch(() => {
-              terrainEl.innerHTML = '<span style="color:rgba(255,255,255,0.3);font-size:11px">Terrain data unavailable</span>';
-            });
+  private fetchTerrainProfile(detection: import('./field-detector').FieldDetection, composite: CompositeResult): void {
+    if (detection.lengthM < 30) return;
+    const terrainEl = document.getElementById('terrain-profile');
+    if (!terrainEl) return;
+    terrainEl.innerHTML = '<span style="color:rgba(255,255,255,0.4);font-size:11px">Loading terrain...</span>';
+    const center = composite.pixelToLatLon(detection.centerPixel.x, detection.centerPixel.y);
+    getElevationProfile(center.lat, center.lon, detection.orientationDeg, detection.lengthM)
+      .then((profile) => {
+        let html = `<div class="analysis-field-value">${profile.avgSlopePercent}% avg slope, ${profile.maxSlopePercent}% max</div>`;
+        if (!profile.isFlat) {
+          html += `<div class="analysis-error" style="margin-top:2px">&#9888; Terrain may be too sloped (&gt;3%)</div>`;
+        } else {
+          html += `<div class="analysis-field-detail" style="color:#22c55e">Terrain is flat enough for landing</div>`;
         }
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Detection failed';
-      container.innerHTML = `<div class="analysis-error">${msg}</div>`;
-      if (detectBtn) { detectBtn.disabled = false; detectBtn.textContent = 'Detect Field'; }
-    }
+        const elevs = profile.samples.map(s => s.elevM);
+        const minE = Math.min(...elevs), maxE = Math.max(...elevs);
+        const range = Math.max(maxE - minE, 1);
+        const barHtml = elevs.map(e => {
+          const h = Math.round(((e - minE) / range) * 30 + 2);
+          return `<div style="width:${Math.floor(100 / elevs.length)}%;height:${h}px;background:#3b82f6;border-radius:1px"></div>`;
+        }).join('');
+        html += `<div style="display:flex;align-items:end;gap:1px;height:34px;margin-top:6px">${barHtml}</div>`;
+        html += `<div class="analysis-field-detail">${Math.round(minE)}m — ${Math.round(maxE)}m elev (${Math.round(maxE - minE)}m range)</div>`;
+        terrainEl.innerHTML = html;
+      })
+      .catch(() => { terrainEl.innerHTML = '<span style="color:rgba(255,255,255,0.3);font-size:11px">Terrain data unavailable</span>'; });
   }
 
   // --- Optional AI description ---
@@ -285,15 +272,11 @@ export class UIController {
     const wp = this.waypoints[waypointIndex];
     const aiBtn = document.getElementById('ai-describe-btn') as HTMLButtonElement | null;
     const aiContainer = document.getElementById('ai-description');
-
     if (!this.lastDetectionOutput || !aiContainer) return;
     if (aiBtn) { aiBtn.disabled = true; aiBtn.textContent = 'Connecting to Ollama...'; }
     aiContainer.innerHTML = '<div class="analysis-spinner"></div>';
-
     try {
-      const text = await getAiDescription(wp, this.lastDetectionOutput.composite, (msg) => {
-        if (aiBtn) aiBtn.textContent = msg;
-      });
+      const text = await getAiDescription(wp, this.lastDetectionOutput.composite, (msg) => { if (aiBtn) aiBtn.textContent = msg; });
       aiContainer.innerHTML = `<div class="ai-desc-text">${formatAiText(text)}</div>`;
       if (aiBtn) { aiBtn.disabled = false; aiBtn.textContent = 'Refresh AI Description'; }
     } catch (err) {
@@ -303,15 +286,22 @@ export class UIController {
     }
   }
 
-  // --- Draw CV detection results on map ---
+  // --- Draw detection results on map ---
 
   private drawDetectionOverlays(output: DetectionOutput): void {
     const layer = this.mapManager.detailLayer;
+    // Clear previous overlays but keep home line
+    layer.clearLayers();
+    // Re-add home line if needed
+    if (this.homeIndex !== null) {
+      const wp = this.waypoints[output.detection.orientationDeg !== undefined ? 0 : 0]; // dummy
+      void wp;
+    }
+
     const { detection, composite } = output;
     const p2ll = composite.pixelToLatLon;
     const allPoints: L.LatLngTuple[] = [];
 
-    // Draw the actual detected field boundary polygon
     if (detection.boundaryPixels.length >= 3) {
       const latlngs: L.LatLngTuple[] = detection.boundaryPixels.map((pt) => {
         const ll = p2ll(pt.x, pt.y);
@@ -324,12 +314,10 @@ export class UIController {
       }));
     }
 
-    // Tape measures
     if (detection.lengthM > 10 && detection.widthM > 5) {
       const center = p2ll(detection.centerPixel.x, detection.centerPixel.y);
       const orient = detection.orientationDeg;
-      const halfLen = detection.lengthM / 2;
-      const halfWid = detection.widthM / 2;
+      const halfLen = detection.lengthM / 2, halfWid = detection.widthM / 2;
 
       const end1 = this.offsetLatLon(center.lat, center.lon, halfLen, orient);
       const end2 = this.offsetLatLon(center.lat, center.lon, halfLen, (orient + 180) % 360);
@@ -340,26 +328,6 @@ export class UIController {
       this.drawTapeLine(layer, w1, w2, fmtShortDist(detection.widthM), '#f59e0b');
     }
 
-    // Obstruction markers
-    for (const obs of detection.obstructions) {
-      const ll = p2ll(obs.pixelPos.x, obs.pixelPos.y);
-      const pos: L.LatLngTuple = [ll.lat, ll.lon];
-      allPoints.push(pos);
-
-      const color = obs.type === 'building' ? '#ef4444' :
-        obs.type === 'water' ? '#3b82f6' :
-        obs.type === 'road' ? '#94a3b8' : '#f59e0b';
-      const icon = L.divIcon({
-        className: 'obstruction-map-icon',
-        html: `<div class="obs-marker" style="background:${color}"><span class="obs-marker-label">${this.obstructionIcon(obs.type)}</span></div>`,
-        iconSize: [26, 26], iconAnchor: [13, 13],
-      });
-      const marker = L.marker(pos, { icon, interactive: true });
-      marker.bindTooltip(`<b>${obs.type}</b> (${obs.direction})`, { direction: 'top', offset: [0, -14] });
-      layer.addLayer(marker);
-    }
-
-    // Fit map to overlays
     if (allPoints.length > 1) {
       this.mapManager.map.fitBounds(L.latLngBounds(allPoints), {
         paddingTopLeft: [20, 20], paddingBottomRight: [360, 20], maxZoom: 17, animate: true,
@@ -401,16 +369,6 @@ export class UIController {
     }));
   }
 
-  private obstructionIcon(type: string): string {
-    switch (type) {
-      case 'trees': return '\ud83c\udf33';
-      case 'building': return '\ud83c\udfe0';
-      case 'road': return '\u2550';
-      case 'water': return '\ud83c\udf0a';
-      default: return '\u26a0';
-    }
-  }
-
   // --- File loading, toolbar, markers, filters ---
 
   private loadFile(file: File): void {
@@ -434,7 +392,6 @@ export class UIController {
     const homeOptions = this.waypoints
       .map((wp, i) => `<option value="${i}">${wp.name}${wp.code ? ` (${wp.code})` : ''}</option>`)
       .join('');
-
     const styleChecks = [
       WaypointStyle.GlidingAirfield, WaypointStyle.PavedAirfield,
       WaypointStyle.GrassAirfield, WaypointStyle.Outlanding, WaypointStyle.Unknown,
@@ -442,58 +399,46 @@ export class UIController {
       const config = getStyleConfig(s);
       return `<label><input type="checkbox" data-style="${s}" checked> ${config.label}</label>`;
     }).join('');
-
     const curUnits = getUnitSystem();
     const sliderUnit = distSliderUnit();
 
     this.toolbar.innerHTML = `
       <label>Home: <select id="home-select"><option value="">-- Select home --</option>${homeOptions}</select></label>
-      <div class="toolbar-divider"></div>
-      ${styleChecks}
-      <div class="toolbar-divider"></div>
+      <div class="toolbar-divider"></div>${styleChecks}<div class="toolbar-divider"></div>
       <div class="distance-group" id="distance-group" style="display:none">
-        <label>Max dist:</label>
-        <input type="range" id="distance-slider" min="1" max="200" value="200">
+        <label>Max dist:</label><input type="range" id="distance-slider" min="1" max="200" value="200">
         <span class="distance-value" id="distance-value">200 ${sliderUnit}</span>
-      </div>
-      <div class="toolbar-divider"></div>
+      </div><div class="toolbar-divider"></div>
       <label>Units: <select id="unit-select">
         <option value="metric" ${curUnits === 'metric' ? 'selected' : ''}>Metric (m/km)</option>
         <option value="imperial" ${curUnits === 'imperial' ? 'selected' : ''}>Imperial (ft/mi)</option>
         <option value="aviation" ${curUnits === 'aviation' ? 'selected' : ''}>Aviation (ft/nm)</option>
-      </select></label>
-      <div class="toolbar-divider"></div>
+      </select></label><div class="toolbar-divider"></div>
       <span class="toolbar-stats" id="stats-text">${this.waypoints.length} waypoints</span>
-      <button class="file-label" id="reload-btn" style="padding:4px 12px;font-size:12px">Load new file</button>
-    `;
+      <button class="file-label" id="reload-btn" style="padding:4px 12px;font-size:12px">Load new file</button>`;
 
     document.getElementById('home-select')!.addEventListener('change', (e) => {
       const val = (e.target as HTMLSelectElement).value;
       if (val !== '') this.setHome(parseInt(val, 10));
     });
-
     this.toolbar.querySelectorAll<HTMLInputElement>('input[data-style]').forEach((cb) => {
       cb.addEventListener('change', () => this.applyFilters());
     });
-
     document.getElementById('distance-slider')!.addEventListener('input', (e) => {
       const val = parseInt((e.target as HTMLInputElement).value, 10);
       this.maxDistanceKm = sliderValToKm(val);
       document.getElementById('distance-value')!.textContent = `${val} ${distSliderUnit()}`;
       this.applyFilters();
     });
-
     document.getElementById('unit-select')!.addEventListener('change', (e) => {
       setUnitSystem((e.target as HTMLSelectElement).value as UnitSystem);
       this.refreshTooltips();
       this.buildToolbar();
       if (this.homeIndex !== null) {
-        const select = document.getElementById('home-select') as HTMLSelectElement;
-        select.value = String(this.homeIndex);
+        (document.getElementById('home-select') as HTMLSelectElement).value = String(this.homeIndex);
         document.getElementById('distance-group')!.style.display = 'flex';
       }
     });
-
     document.getElementById('reload-btn')!.addEventListener('click', () => {
       this.exitDetailMode();
       this.overlay.classList.remove('hidden');
@@ -530,11 +475,9 @@ export class UIController {
   private setHome(index: number): void {
     this.homeIndex = index;
     const home = this.waypoints[index];
-    const select = document.getElementById('home-select') as HTMLSelectElement;
-    select.value = String(index);
+    (document.getElementById('home-select') as HTMLSelectElement).value = String(index);
     document.getElementById('distance-group')!.style.display = 'flex';
     this.mapManager.homeMarkerLayer.clearLayers();
-
     let maxDist = 0;
     for (const entry of this.markers) {
       const info = this.computeHomeInfo(entry.waypoint, home);
@@ -548,7 +491,6 @@ export class UIController {
         }));
       }
     }
-
     const slider = document.getElementById('distance-slider') as HTMLInputElement;
     const maxDisplayVal = Math.max(kmToSliderVal(maxDist), 10);
     const roundedMax = Math.ceil(maxDisplayVal / 10) * 10;
@@ -561,10 +503,11 @@ export class UIController {
   }
 
   private computeHomeInfo(wp: Waypoint, home: Waypoint): HomeInfo {
-    const distanceKm = haversineDistance(home.lat, home.lon, wp.lat, wp.lon);
-    const bearingDeg = bearing(home.lat, home.lon, wp.lat, wp.lon);
-    const cardinalDir = cardinalDirection(bearingDeg);
-    return { distanceKm, bearingDeg, cardinalDir };
+    return {
+      distanceKm: haversineDistance(home.lat, home.lon, wp.lat, wp.lon),
+      bearingDeg: bearing(home.lat, home.lon, wp.lat, wp.lon),
+      cardinalDir: cardinalDirection(bearing(home.lat, home.lon, wp.lat, wp.lon)),
+    };
   }
 
   private applyFilters(): void {
@@ -577,8 +520,7 @@ export class UIController {
     for (const entry of this.markers) {
       let visible = visibleStyles.has(entry.waypoint.style);
       if (visible && home && entry.index !== this.homeIndex) {
-        const dist = haversineDistance(home.lat, home.lon, entry.waypoint.lat, entry.waypoint.lon);
-        if (dist > this.maxDistanceKm) visible = false;
+        if (haversineDistance(home.lat, home.lon, entry.waypoint.lat, entry.waypoint.lon) > this.maxDistanceKm) visible = false;
       }
       if (visible) {
         if (!this.mapManager.waypointLayer.hasLayer(entry.marker)) this.mapManager.waypointLayer.addLayer(entry.marker);
@@ -589,4 +531,8 @@ export class UIController {
     }
     document.getElementById('stats-text')!.textContent = `${visibleCount} / ${this.waypoints.length} waypoints`;
   }
+}
+
+function hasRunway(wp: Waypoint): boolean {
+  return wp.rwdir > 0 && wp.rwlen > 0;
 }

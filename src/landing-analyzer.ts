@@ -1,7 +1,8 @@
 import { Waypoint } from './types';
 import { compositeTiles, CompositeResult } from './tile-compositer';
-import { detectField, FieldDetection } from './field-detector';
-import { getTerrainSafeDistances } from './terrain';
+import { FieldDetection, buildRunwayRect, buildStripRectFromEndpoints, computeStripFromEndpoints } from './field-detector';
+
+// --- Ollama settings ---
 
 const OLLAMA_URL_KEY = 'landout-ollama-url';
 const OLLAMA_MODEL_KEY = 'landout-ollama-model';
@@ -29,15 +30,12 @@ export async function checkOllamaConnection(): Promise<{ ok: boolean; error?: st
     const data = await resp.json();
     const models = (data.models || []).map((m: { name: string }) => m.name);
     const currentModel = getOllamaModel();
-    if (models.length === 0) {
-      return { ok: false, error: 'No models installed. Run: ollama pull gemma3:4b', models };
-    }
-    if (!models.some((m: string) => m.startsWith(currentModel))) {
+    if (models.length === 0) return { ok: false, error: 'No models installed.', models };
+    if (!models.some((m: string) => m.startsWith(currentModel)))
       return { ok: false, error: `Model "${currentModel}" not found. Available: ${models.join(', ')}`, models };
-    }
     return { ok: true, models };
   } catch {
-    return { ok: false, error: `Cannot reach Ollama at ${url}. Is it running? (ollama serve)` };
+    return { ok: false, error: `Cannot reach Ollama at ${url}. Is it running?` };
   }
 }
 
@@ -45,22 +43,15 @@ export function promptForSettings(): Promise<boolean> {
   return new Promise((resolve) => {
     const currentUrl = getOllamaUrl();
     const currentModel = getOllamaModel();
-
     const modal = document.createElement('div');
     modal.className = 'api-key-modal';
     modal.innerHTML = `
       <div class="api-key-modal-content">
         <h3 style="margin:0 0 8px">Ollama Settings</h3>
-        <p style="font-size:13px;color:rgba(255,255,255,0.6);margin:0 0 4px">
-          AI description is optional — field detection uses local computer vision.
-        </p>
-        <p style="font-size:12px;color:rgba(255,255,255,0.4);margin:0 0 12px">
-          Install: <a href="https://ollama.com" target="_blank" style="color:#3b82f6">ollama.com</a>
-          &bull; Then run: <code style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">ollama pull gemma3:4b</code>
-        </p>
-        <label style="font-size:12px;color:rgba(255,255,255,0.5);display:block;margin-bottom:2px">Ollama URL</label>
+        <p style="font-size:13px;color:rgba(255,255,255,0.6);margin:0 0 12px">Optional AI description via Ollama.</p>
+        <label style="font-size:12px;color:rgba(255,255,255,0.5)">URL</label>
         <input type="text" id="ollama-url-input" value="${currentUrl}" autocomplete="off" />
-        <label style="font-size:12px;color:rgba(255,255,255,0.5);display:block;margin-bottom:2px">Model</label>
+        <label style="font-size:12px;color:rgba(255,255,255,0.5)">Model</label>
         <input type="text" id="ollama-model-input" value="${currentModel}" autocomplete="off" />
         <div id="ollama-status" style="font-size:12px;margin:8px 0;min-height:18px"></div>
         <div class="api-key-modal-actions">
@@ -68,51 +59,30 @@ export function promptForSettings(): Promise<boolean> {
           <button class="detail-back-btn" id="ollama-test" style="border-color:#3b82f6;color:#3b82f6">Test</button>
           <button class="detail-analyze-btn" id="ollama-save" style="width:auto;padding:8px 20px">Save</button>
         </div>
-      </div>
-    `;
+      </div>`;
     document.body.appendChild(modal);
-
     const urlInput = document.getElementById('ollama-url-input') as HTMLInputElement;
     const modelInput = document.getElementById('ollama-model-input') as HTMLInputElement;
     const statusEl = document.getElementById('ollama-status')!;
-
-    function cleanup(saved: boolean) {
-      modal.remove();
-      resolve(saved);
-    }
-
+    function cleanup(saved: boolean) { modal.remove(); resolve(saved); }
     document.getElementById('ollama-cancel')!.addEventListener('click', () => cleanup(false));
-
     document.getElementById('ollama-test')!.addEventListener('click', async () => {
       setOllamaSettings(urlInput.value.trim(), modelInput.value.trim());
-      statusEl.innerHTML = '<span style="color:#f59e0b">Testing connection...</span>';
+      statusEl.innerHTML = '<span style="color:#f59e0b">Testing...</span>';
       const check = await checkOllamaConnection();
-      if (check.ok) {
-        statusEl.innerHTML = '<span style="color:#22c55e">Connected! Model available.</span>';
-        if (check.models) {
-          statusEl.innerHTML += `<br><span style="color:rgba(255,255,255,0.4);font-size:11px">Models: ${check.models.join(', ')}</span>`;
-        }
-      } else {
-        statusEl.innerHTML = `<span style="color:#ef4444">${check.error}</span>`;
-      }
+      statusEl.innerHTML = check.ok
+        ? `<span style="color:#22c55e">Connected!</span>`
+        : `<span style="color:#ef4444">${check.error}</span>`;
     });
-
     document.getElementById('ollama-save')!.addEventListener('click', () => {
-      const url = urlInput.value.trim();
-      const model = modelInput.value.trim();
-      if (url && model) {
-        setOllamaSettings(url, model);
-        cleanup(true);
-      }
+      const url = urlInput.value.trim(), model = modelInput.value.trim();
+      if (url && model) { setOllamaSettings(url, model); cleanup(true); }
     });
-
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) cleanup(false);
-    });
+    modal.addEventListener('click', (e) => { if (e.target === modal) cleanup(false); });
   });
 }
 
-// --- Detection output (CV-based) ---
+// --- Detection output ---
 
 export interface DetectionOutput {
   detection: FieldDetection;
@@ -121,9 +91,37 @@ export interface DetectionOutput {
 
 export type { CompositeResult };
 
-/**
- * Fetch tiles for a waypoint. Returns composite for detection.
- */
+// --- Saved strips persistence ---
+
+const SAVED_STRIPS_KEY = 'landout-saved-strips';
+
+interface SavedStrip {
+  lat1: number; lon1: number;
+  lat2: number; lon2: number;
+  widthM: number;
+}
+
+function savedStripKey(lat: number, lon: number): string {
+  return `${lat.toFixed(5)},${lon.toFixed(5)}`;
+}
+
+export function getSavedStrip(lat: number, lon: number): SavedStrip | null {
+  try {
+    const all = JSON.parse(localStorage.getItem(SAVED_STRIPS_KEY) || '{}');
+    return all[savedStripKey(lat, lon)] || null;
+  } catch { return null; }
+}
+
+export function saveStrip(lat: number, lon: number, strip: SavedStrip): void {
+  try {
+    const all = JSON.parse(localStorage.getItem(SAVED_STRIPS_KEY) || '{}');
+    all[savedStripKey(lat, lon)] = strip;
+    localStorage.setItem(SAVED_STRIPS_KEY, JSON.stringify(all));
+  } catch { /* ignore */ }
+}
+
+// --- Tile fetching ---
+
 export async function fetchTilesForWaypoint(
   wp: Waypoint,
   onProgress: (message: string) => void,
@@ -132,93 +130,82 @@ export async function fetchTilesForWaypoint(
   return compositeTiles(wp.lat, wp.lon, 17, 3);
 }
 
-/**
- * Run field detection on a composite image with a specific seed point.
- * The seed is where the user clicked on the landing surface.
- * Fetches terrain data to clamp the strip to flat ground.
- */
-export async function runDetection(
+// --- Detection from known runway data (center click) ---
+
+export function detectFromRunwayData(
   wp: Waypoint,
   composite: CompositeResult,
-  seedLat: number,
-  seedLon: number,
-  onProgress?: (msg: string) => void,
-): Promise<FieldDetection> {
-  const { canvas, metersPerPx } = composite;
+  centerLat: number,
+  centerLon: number,
+): FieldDetection {
+  const { metersPerPx } = composite;
 
-  // Convert seed lat/lon to pixel coords
+  // Convert click lat/lon to pixel
   const R = 6371000;
-  const dLat = (seedLat - wp.lat) * Math.PI / 180;
-  const dLon = (seedLon - wp.lon) * Math.PI / 180;
-  const latRad = (wp.lat * Math.PI) / 180;
-  const dy = dLat * R;
-  const dx = dLon * R * Math.cos(latRad);
+  const dLat = (centerLat - wp.lat) * Math.PI / 180;
+  const dLon = (centerLon - wp.lon) * Math.PI / 180;
+  const latRad = wp.lat * Math.PI / 180;
+  const dy = dLat * R, dx = dLon * R * Math.cos(latRad);
+  const cx = composite.waypointPixel.x + dx / metersPerPx;
+  const cy = composite.waypointPixel.y - dy / metersPerPx;
 
-  const seedPx = composite.waypointPixel.x + dx / metersPerPx;
-  const seedPy = composite.waypointPixel.y - dy / metersPerPx;
+  const widthM = wp.rwwidth || Math.max(wp.rwlen * 0.04, 15);
+  const corners = buildRunwayRect(cx, cy, wp.rwdir, wp.rwlen, wp.rwwidth, metersPerPx);
+  const orientDeg = wp.rwdir > 180 ? wp.rwdir - 180 : wp.rwdir;
 
-  const runway = (wp.rwdir > 0 && wp.rwlen > 0)
-    ? { rwdir: wp.rwdir, rwlen: wp.rwlen, rwwidth: wp.rwwidth }
-    : undefined;
-
-  // First pass: CV detection from the seed
-  const detection = detectField(canvas, seedPx, seedPy, metersPerPx, runway);
-
-  // Second pass: clamp strip to flat terrain
-  if (detection.lengthM > 30 && !runway) {
-    onProgress?.('Checking terrain...');
-    try {
-      const safeDist = await getTerrainSafeDistances(
-        seedLat, seedLon,
-        detection.orientationDeg,
-        detection.lengthM,
-        50, // sample every 50m
-        5,  // max 5% slope
-      );
-
-      // Clamp the strip length to safe terrain
-      const cvHalfFwd = detection.lengthM / 2;
-      const cvHalfBwd = detection.lengthM / 2;
-      const safeFwd = Math.min(cvHalfFwd, safeDist.fwdDistM);
-      const safeBwd = Math.min(cvHalfBwd, safeDist.bwdDistM);
-      const safeLength = safeFwd + safeBwd;
-
-      if (safeLength < detection.lengthM * 0.9) {
-        // Terrain clamped the strip — rebuild the boundary
-        const orient = detection.orientationDeg;
-        const rad = (orient * Math.PI) / 180;
-        const sinA = Math.sin(rad), cosA = Math.cos(rad);
-        const hw = detection.widthM / 2 / metersPerPx;
-
-        // New endpoints in pixels
-        const fwdPx = safeFwd / metersPerPx;
-        const bwdPx = safeBwd / metersPerPx;
-        const e1x = seedPx + sinA * fwdPx, e1y = seedPy - cosA * fwdPx;
-        const e2x = seedPx - sinA * bwdPx, e2y = seedPy + cosA * bwdPx;
-        const perpSin = Math.sin(rad + Math.PI / 2);
-        const perpCos = Math.cos(rad + Math.PI / 2);
-
-        detection.boundaryPixels = [
-          { x: e1x + perpSin * hw, y: e1y - perpCos * hw },
-          { x: e1x - perpSin * hw, y: e1y + perpCos * hw },
-          { x: e2x - perpSin * hw, y: e2y + perpCos * hw },
-          { x: e2x + perpSin * hw, y: e2y - perpCos * hw },
-        ];
-        detection.centerPixel = { x: (e1x + e2x) / 2, y: (e1y + e2y) / 2 };
-        detection.lengthM = Math.round(safeLength);
-        detection.areaSqM = Math.round(safeLength * detection.widthM);
-      }
-    } catch {
-      // Terrain API failed — proceed with CV-only result
-    }
-  }
-
-  return detection;
+  return {
+    boundaryPixels: corners,
+    centerPixel: { x: cx, y: cy },
+    lengthM: wp.rwlen,
+    widthM: Math.round(widthM),
+    orientationDeg: orientDeg,
+    surface: 'unknown',
+    obstructions: [],
+    fieldPixelCount: 0,
+    areaSqM: Math.round(wp.rwlen * widthM),
+  };
 }
 
-/**
- * Optional AI description via Ollama. Call after detectLandingSite.
- */
+// --- Detection from two endpoints (user-drawn) ---
+
+export function detectFromEndpoints(
+  wp: Waypoint,
+  composite: CompositeResult,
+  lat1: number, lon1: number,
+  lat2: number, lon2: number,
+  widthM = 30,
+): FieldDetection {
+  const strip = computeStripFromEndpoints(lat1, lon1, lat2, lon2, widthM);
+  const corners = buildStripRectFromEndpoints(
+    lat1, lon1, lat2, lon2, widthM,
+    wp.lat, wp.lon, composite.metersPerPx, composite.waypointPixel,
+  );
+
+  // Center in pixel space
+  const R = 6371000;
+  const dLat = (strip.centerLat - wp.lat) * Math.PI / 180;
+  const dLon = (strip.centerLon - wp.lon) * Math.PI / 180;
+  const latRad = wp.lat * Math.PI / 180;
+  const centerPx = {
+    x: composite.waypointPixel.x + (dLon * R * Math.cos(latRad)) / composite.metersPerPx,
+    y: composite.waypointPixel.y - (dLat * R) / composite.metersPerPx,
+  };
+
+  return {
+    boundaryPixels: corners,
+    centerPixel: centerPx,
+    lengthM: strip.lengthM,
+    widthM,
+    orientationDeg: strip.orientationDeg,
+    surface: 'unknown',
+    obstructions: [],
+    fieldPixelCount: 0,
+    areaSqM: Math.round(strip.lengthM * widthM),
+  };
+}
+
+// --- Optional AI description ---
+
 export async function getAiDescription(
   wp: Waypoint,
   composite: CompositeResult,
@@ -226,47 +213,35 @@ export async function getAiDescription(
 ): Promise<string> {
   const check = await checkOllamaConnection();
   if (!check.ok) throw new Error(check.error || 'Cannot connect to Ollama');
-
   const base64 = composite.dataUrl.replace(/^data:image\/jpeg;base64,/, '');
   const ollamaUrl = getOllamaUrl();
   const model = getOllamaModel();
-
   onProgress(`Getting AI description (${model})...`);
 
   const response = await fetch(`${ollamaUrl}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model,
-      stream: true,
+      model, stream: true,
       messages: [{
         role: 'user',
-        content: `Describe this satellite image of a potential glider landing field. What is the surface condition? Any hazards for landing? Rate suitability 1-5 (1=unusable, 5=excellent). Be brief.${wp.rwdir ? ` Known runway: ${wp.rwdir}°/${wp.rwlen}m.` : ''}`,
+        content: `Describe this satellite image of a potential glider landing field. What is the surface condition? Any hazards? Rate suitability 1-5. Be brief.${wp.rwdir ? ` Known runway: ${wp.rwdir}°/${wp.rwlen}m.` : ''}`,
         images: [base64],
       }],
     }),
   });
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Ollama error (${response.status}): ${body.slice(0, 200)}`);
-  }
-
+  if (!response.ok) throw new Error(`Ollama error: ${response.status}`);
   let text = '';
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
-
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     for (const line of decoder.decode(value, { stream: true }).split('\n')) {
       if (!line.trim()) continue;
-      try {
-        const obj = JSON.parse(line);
-        if (obj.message?.content) text += obj.message.content;
-      } catch { /* skip */ }
+      try { const obj = JSON.parse(line); if (obj.message?.content) text += obj.message.content; } catch { /* skip */ }
     }
   }
-
   return text || 'No description available.';
 }

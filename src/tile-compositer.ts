@@ -112,9 +112,17 @@ export async function compositeTiles(
   ctx.arc(wpPixelX, wpPixelY, crossSize * 0.6, 0, Math.PI * 2);
   ctx.stroke();
 
+  // Downscale to 640x640 for faster AI processing
+  const outSize = 640;
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = outSize;
+  outCanvas.height = outSize;
+  const outCtx = outCanvas.getContext('2d')!;
+  outCtx.drawImage(canvas, 0, 0, canvasSize, canvasSize, 0, 0, outSize, outSize);
+
   let dataUrl: string;
   try {
-    dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    dataUrl = outCanvas.toDataURL('image/jpeg', 0.8);
   } catch {
     throw new Error(
       'Cannot access satellite tiles due to browser security restrictions (CORS). ' +
@@ -127,10 +135,15 @@ export async function compositeTiles(
   const originTileX = center.x - half;
   const originTileY = center.y - half;
 
+  // AI sees the downscaled image (outSize px), so scale pixel coords back to full canvas
+  const scaleFactor = canvasSize / outSize;
+
   function pixelToLatLon(px: number, py: number): { lat: number; lon: number } {
-    // Convert pixel to tile-space fractional coordinates
-    const tileX = originTileX + px / TILE_SIZE;
-    const tileY = originTileY + py / TILE_SIZE;
+    // Scale from downscaled image coords to full tile coords
+    const fullPx = px * scaleFactor;
+    const fullPy = py * scaleFactor;
+    const tileX = originTileX + fullPx / TILE_SIZE;
+    const tileY = originTileY + fullPy / TILE_SIZE;
     // Convert tile coordinates back to lat/lon
     const pLon = (tileX / n) * 360 - 180;
     const pLatRad = Math.atan(Math.sinh(Math.PI * (1 - (2 * tileY) / n)));

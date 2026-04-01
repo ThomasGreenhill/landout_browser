@@ -6,7 +6,7 @@ import { getStyleConfig } from './marker-factory';
 const OLLAMA_URL_KEY = 'landout-ollama-url';
 const OLLAMA_MODEL_KEY = 'landout-ollama-model';
 const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
-const DEFAULT_OLLAMA_MODEL = 'llama3.2-vision';
+const DEFAULT_OLLAMA_MODEL = 'moondream';
 
 
 export function getOllamaUrl(): string {
@@ -126,14 +126,14 @@ function cacheKey(lat: number, lon: number): string {
 
 function buildPrompt(
   wp: Waypoint,
-  metersPerPx: number,
+  _metersPerPx: number,
   totalWidthM: number,
 ): string {
   const styleLabel = getStyleConfig(wp.style).label;
 
-  const imgSize = 5 * 256;
+  const imgSize = 640; // downscaled output size
 
-  return `Analyze this satellite image of a glider landing field. Red crosshair = waypoint. Scale: ${metersPerPx.toFixed(1)} m/pixel, image is ${imgSize}px wide (~${Math.round(totalWidthM)}m). North is up. Image center pixel is (${imgSize / 2},${imgSize / 2}).
+  return `Analyze this satellite image of a glider landing field. Red crosshair = waypoint. Scale: ${(totalWidthM / imgSize).toFixed(1)} m/pixel, image is ${imgSize}px (~${Math.round(totalWidthM)}m). North is up. Center pixel: (${imgSize / 2},${imgSize / 2}).
 
 Waypoint: "${wp.name}" (${styleLabel}), ${Math.round(wp.elev)}m elev.${wp.rwdir ? ` RWY ${wp.rwdir}°/${wp.rwlen}m.` : ''}
 
@@ -224,7 +224,7 @@ export async function analyzeLandingSite(
 
   onProgress('Fetching satellite tiles...');
   const zoom = 17;
-  const composite = await compositeTiles(wp.lat, wp.lon, zoom);
+  const composite = await compositeTiles(wp.lat, wp.lon, zoom, 3);
 
   // Strip the data URL prefix to get raw base64
   const base64 = composite.dataUrl.replace(/^data:image\/jpeg;base64,/, '');
@@ -239,7 +239,7 @@ export async function analyzeLandingSite(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model,
-      stream: false,
+      stream: true,
       messages: [
         {
           role: 'user',
@@ -255,8 +255,35 @@ export async function analyzeLandingSite(
     throw new Error(`Ollama error (${response.status}): ${body.slice(0, 200)}`);
   }
 
-  const data = await response.json();
-  const text = data.message?.content;
+  // Stream the response for live feedback
+  let text = '';
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let chunks = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    // Ollama streams newline-delimited JSON objects
+    for (const line of chunk.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj.message?.content) {
+          text += obj.message.content;
+          chunks++;
+          if (chunks % 5 === 0) {
+            // Show preview of response length
+            onProgress(`Analyzing... (${text.length} chars)`);
+          }
+        }
+      } catch {
+        // skip malformed lines
+      }
+    }
+  }
+
   if (!text) {
     throw new Error('No response content from Ollama');
   }

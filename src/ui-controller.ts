@@ -160,7 +160,11 @@ export class UIController {
         this.updateAnalysisUI({ status: 'loading', message });
       });
       this.updateAnalysisUI({ status: 'success', result: output.result });
-      this.drawAnalysisOverlays(wp, output.result, output.pixelToLatLon);
+      try {
+        this.drawAnalysisOverlays(wp, output.result, output.pixelToLatLon);
+      } catch (overlayErr) {
+        console.warn('Failed to draw analysis overlays:', overlayErr);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Analysis failed';
       this.updateAnalysisUI({ status: 'error', error: message });
@@ -211,6 +215,12 @@ export class UIController {
     const layer = this.mapManager.detailLayer;
     const area = result.landableArea;
 
+    // Coerce dimensions to numbers (model may return strings)
+    const lengthM = Number(area.lengthM) || 0;
+    const widthM = Number(area.widthM) || 0;
+    const orientDeg = Number(area.orientationDeg) || 0;
+    const usableM = Number(area.usableLengthM) || 0;
+
     // Determine the actual field center — use AI-reported pixel center if valid,
     // otherwise fall back to waypoint location
     let fieldLat = wp.lat;
@@ -227,13 +237,13 @@ export class UIController {
     const allPoints: L.LatLngTuple[] = [[fieldLat, fieldLon]];
 
     // Only draw if we have meaningful dimensions
-    if (area.lengthM > 10 && area.widthM > 5) {
+    if (lengthM > 10 && widthM > 5) {
       // Use orientation from analysis, fall back to runway direction from .cup, then default 0
-      let orient = area.orientationDeg;
+      let orient = orientDeg;
       if (orient === 0 && wp.rwdir > 0) orient = wp.rwdir;
 
-      const halfLen = area.lengthM / 2;
-      const halfWid = area.widthM / 2;
+      const halfLen = lengthM / 2;
+      const halfWid = widthM / 2;
 
       // Compute runway endpoints along the orientation axis FROM THE FIELD CENTER
       const rwyEnd1 = this.offsetLatLon(fieldLat, fieldLon, halfLen, orient);
@@ -258,16 +268,16 @@ export class UIController {
       layer.addLayer(polygon);
 
       // Length tape measure (along runway axis)
-      this.drawTapeLine(layer, rwyEnd1, rwyEnd2, fmtShortDist(area.lengthM), '#3b82f6');
+      this.drawTapeLine(layer, rwyEnd1, rwyEnd2, fmtShortDist(lengthM), '#3b82f6');
 
       // Width tape measure (perpendicular, at field center)
       const w1 = this.offsetLatLon(fieldLat, fieldLon, halfWid, (orient + 90) % 360);
       const w2 = this.offsetLatLon(fieldLat, fieldLon, halfWid, (orient + 270) % 360);
-      this.drawTapeLine(layer, w1, w2, fmtShortDist(area.widthM), '#f59e0b');
+      this.drawTapeLine(layer, w1, w2, fmtShortDist(widthM), '#f59e0b');
 
       // Usable length indicator (solid green line, if different from total)
-      if (area.usableLengthM > 0 && area.usableLengthM < area.lengthM) {
-        const halfUsable = area.usableLengthM / 2;
+      if (usableM > 0 && usableM < lengthM) {
+        const halfUsable = usableM / 2;
         const u1 = this.offsetLatLon(fieldLat, fieldLon, halfUsable, orient);
         const u2 = this.offsetLatLon(fieldLat, fieldLon, halfUsable, (orient + 180) % 360);
         layer.addLayer(L.polyline([u1, u2], {
@@ -278,7 +288,7 @@ export class UIController {
 
     // Obstruction markers — use pixel positions if available, otherwise place by location text
     if (result.obstructions.length > 0) {
-      const fieldRadius = Math.max(area.lengthM, area.widthM, 200) * 0.6;
+      const fieldRadius = Math.max(lengthM, widthM, 200) * 0.6;
       for (let i = 0; i < result.obstructions.length; i++) {
         const obs = result.obstructions[i];
         let pos: L.LatLngTuple;

@@ -172,6 +172,23 @@ html, body {
   height: 100%;
 }
 
+/* Permanent waypoint name labels */
+.waypoint-label {
+  background: rgba(0, 0, 0, 0.65);
+  border: none;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+}
+
+.waypoint-label::before {
+  border-top-color: rgba(0, 0, 0, 0.65);
+}
+
 /* Analysis map overlays */
 .obstruction-map-icon {
   background: none !important;

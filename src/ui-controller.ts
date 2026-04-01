@@ -415,8 +415,10 @@ export class UIController {
       const icon = createMarkerIcon(wp.style);
       const marker = L.marker([wp.lat, wp.lon], { icon });
       marker.bindTooltip(buildTooltipText(wp), {
+        permanent: true,
         direction: 'top',
         offset: [0, -12],
+        className: 'waypoint-label',
       });
       marker.on('click', () => this.openDetailMode(i));
 

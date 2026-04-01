@@ -191,77 +191,97 @@ export class UIController {
     const layer = this.mapManager.detailLayer;
     const area = result.landableArea;
 
+    // Collect all overlay points so we can fit the map to show them
+    const allPoints: L.LatLngTuple[] = [[wp.lat, wp.lon]];
+
     // Only draw if we have meaningful dimensions
-    if (area.lengthM > 0 && area.widthM > 0) {
-      const orient = area.orientationDeg;
+    if (area.lengthM > 10 && area.widthM > 5) {
+      // Use orientation from analysis, fall back to runway direction from .cup, then default 0
+      let orient = area.orientationDeg;
+      if (orient === 0 && wp.rwdir > 0) orient = wp.rwdir;
+
       const halfLen = area.lengthM / 2;
       const halfWid = area.widthM / 2;
 
-      // Compute 4 corners from center + orientation + dimensions
-      // Runway axis is along orientationDeg; perpendicular is orient+90
-      const c1 = this.offsetLatLon(wp.lat, wp.lon, halfLen, orient);
-      const c2 = this.offsetLatLon(wp.lat, wp.lon, halfLen, (orient + 180) % 360);
+      // Compute runway endpoints along the orientation axis
+      const rwyEnd1 = this.offsetLatLon(wp.lat, wp.lon, halfLen, orient);
+      const rwyEnd2 = this.offsetLatLon(wp.lat, wp.lon, halfLen, (orient + 180) % 360);
 
-      const corner1 = this.offsetLatLon(c1[0], c1[1], halfWid, (orient + 90) % 360);
-      const corner2 = this.offsetLatLon(c1[0], c1[1], halfWid, (orient + 270) % 360);
-      const corner3 = this.offsetLatLon(c2[0], c2[1], halfWid, (orient + 270) % 360);
-      const corner4 = this.offsetLatLon(c2[0], c2[1], halfWid, (orient + 90) % 360);
+      // Compute 4 corners (rectangle around runway)
+      const corner1 = this.offsetLatLon(rwyEnd1[0], rwyEnd1[1], halfWid, (orient + 90) % 360);
+      const corner2 = this.offsetLatLon(rwyEnd1[0], rwyEnd1[1], halfWid, (orient + 270) % 360);
+      const corner3 = this.offsetLatLon(rwyEnd2[0], rwyEnd2[1], halfWid, (orient + 270) % 360);
+      const corner4 = this.offsetLatLon(rwyEnd2[0], rwyEnd2[1], halfWid, (orient + 90) % 360);
+
+      allPoints.push(corner1, corner2, corner3, corner4);
 
       // Field polygon
       const polygon = L.polygon([corner1, corner2, corner3, corner4], {
         color: '#22c55e',
-        weight: 2,
+        weight: 3,
         fillColor: '#22c55e',
-        fillOpacity: 0.12,
-        dashArray: '6, 4',
+        fillOpacity: 0.15,
+        dashArray: '8, 5',
       });
       layer.addLayer(polygon);
 
       // Length tape measure (along runway axis)
-      this.drawTapeLine(layer, c1, c2, `${area.lengthM}m`, '#3b82f6');
+      this.drawTapeLine(layer, rwyEnd1, rwyEnd2, `${area.lengthM}m`, '#3b82f6');
 
       // Width tape measure (perpendicular, at center)
       const w1 = this.offsetLatLon(wp.lat, wp.lon, halfWid, (orient + 90) % 360);
       const w2 = this.offsetLatLon(wp.lat, wp.lon, halfWid, (orient + 270) % 360);
       this.drawTapeLine(layer, w1, w2, `${area.widthM}m`, '#f59e0b');
 
-      // Usable length indicator (if different from total)
+      // Usable length indicator (solid green line, if different from total)
       if (area.usableLengthM > 0 && area.usableLengthM < area.lengthM) {
         const halfUsable = area.usableLengthM / 2;
         const u1 = this.offsetLatLon(wp.lat, wp.lon, halfUsable, orient);
         const u2 = this.offsetLatLon(wp.lat, wp.lon, halfUsable, (orient + 180) % 360);
-        const usableLine = L.polyline([u1, u2], {
-          color: '#22c55e',
-          weight: 4,
-          opacity: 0.8,
-        });
-        layer.addLayer(usableLine);
+        layer.addLayer(L.polyline([u1, u2], {
+          color: '#22c55e', weight: 5, opacity: 0.8,
+        }));
       }
     }
 
     // Obstruction markers — place around the field perimeter based on location text
-    const obsByIndex = result.obstructions.map((obs, i) => ({ obs, angle: this.locationToAngle(obs.location, i, result.obstructions.length) }));
-    for (const { obs, angle } of obsByIndex) {
-      // Place obstructions at ~field edge distance from center
-      const dist = Math.max(area.lengthM, area.widthM, 200) * 0.55;
-      const pos = this.offsetLatLon(wp.lat, wp.lon, dist, angle);
-      const severityColor =
-        obs.severity === 'critical' ? '#ef4444' :
-        obs.severity === 'moderate' ? '#f59e0b' : '#94a3b8';
-      const icon = L.divIcon({
-        className: 'obstruction-map-icon',
-        html: `<div class="obs-marker" style="background:${severityColor}">
-          <span class="obs-marker-label">${this.obstructionIcon(obs.type)}</span>
-        </div>`,
-        iconSize: [26, 26],
-        iconAnchor: [13, 13],
+    if (result.obstructions.length > 0) {
+      const fieldRadius = Math.max(area.lengthM, area.widthM, 200) * 0.6;
+      for (let i = 0; i < result.obstructions.length; i++) {
+        const obs = result.obstructions[i];
+        const angle = this.locationToAngle(obs.location, i, result.obstructions.length);
+        const pos = this.offsetLatLon(wp.lat, wp.lon, fieldRadius, angle);
+        allPoints.push(pos);
+
+        const severityColor =
+          obs.severity === 'critical' ? '#ef4444' :
+          obs.severity === 'moderate' ? '#f59e0b' : '#94a3b8';
+        const icon = L.divIcon({
+          className: 'obstruction-map-icon',
+          html: `<div class="obs-marker" style="background:${severityColor}">
+            <span class="obs-marker-label">${this.obstructionIcon(obs.type)}</span>
+          </div>`,
+          iconSize: [26, 26],
+          iconAnchor: [13, 13],
+        });
+        const marker = L.marker(pos, { icon, interactive: true });
+        marker.bindTooltip(
+          `<b>${obs.type.replace(/_/g, ' ')}</b> (${obs.severity})<br>${obs.description}<br><i>${obs.location}</i>`,
+          { direction: 'top', offset: [0, -14] },
+        );
+        layer.addLayer(marker);
+      }
+    }
+
+    // Fit map to show the entire field + obstructions with padding for the detail panel
+    if (allPoints.length > 1) {
+      const bounds = L.latLngBounds(allPoints);
+      this.mapManager.map.fitBounds(bounds, {
+        paddingTopLeft: [20, 20],
+        paddingBottomRight: [360, 20],  // account for detail panel on right
+        maxZoom: 17,
+        animate: true,
       });
-      const marker = L.marker(pos, { icon, interactive: true });
-      marker.bindTooltip(
-        `<b>${obs.type.replace(/_/g, ' ')}</b> (${obs.severity})<br>${obs.description}<br><i>${obs.location}</i>`,
-        { direction: 'top', offset: [0, -14] },
-      );
-      layer.addLayer(marker);
     }
   }
 

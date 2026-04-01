@@ -1,0 +1,128 @@
+const TILE_SIZE = 256;
+const TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile';
+
+function latLonToTile(lat: number, lon: number, zoom: number): { x: number; y: number } {
+  const n = Math.pow(2, zoom);
+  const x = Math.floor(((lon + 180) / 360) * n);
+  const latRad = (lat * Math.PI) / 180;
+  const y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n);
+  return { x, y };
+}
+
+/**
+ * Meters per pixel at a given latitude and zoom level.
+ */
+export function metersPerPixel(lat: number, zoom: number): number {
+  return (156543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, zoom);
+}
+
+function fetchTile(z: number, y: number, x: number): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`Failed to load tile ${z}/${y}/${x}`));
+    img.src = `${TILE_URL}/${z}/${y}/${x}`;
+  });
+}
+
+export interface CompositeResult {
+  dataUrl: string;
+  metersPerPx: number;
+  totalWidthM: number;
+}
+
+/**
+ * Fetch a grid of satellite tiles centered on a coordinate and composite them
+ * into a single JPEG image. Draws a red crosshair at the exact waypoint location.
+ */
+export async function compositeTiles(
+  lat: number,
+  lon: number,
+  zoom = 17,
+  gridSize = 5,
+): Promise<CompositeResult> {
+  const center = latLonToTile(lat, lon, zoom);
+  const half = Math.floor(gridSize / 2);
+  const mpp = metersPerPixel(lat, zoom);
+  const canvasSize = gridSize * TILE_SIZE;
+
+  // Build tile coordinate list
+  const tileCoords: Array<{ x: number; y: number; gx: number; gy: number }> = [];
+  for (let dy = -half; dy <= half; dy++) {
+    for (let dx = -half; dx <= half; dx++) {
+      tileCoords.push({
+        x: center.x + dx,
+        y: center.y + dy,
+        gx: (dx + half) * TILE_SIZE,
+        gy: (dy + half) * TILE_SIZE,
+      });
+    }
+  }
+
+  // Fetch all tiles in parallel
+  const results = await Promise.allSettled(
+    tileCoords.map((t) => fetchTile(zoom, t.y, t.x)),
+  );
+
+  // Composite onto canvas
+  const canvas = document.createElement('canvas');
+  canvas.width = canvasSize;
+  canvas.height = canvasSize;
+  const ctx = canvas.getContext('2d')!;
+
+  // Dark background for failed tiles
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, 0, canvasSize, canvasSize);
+
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled') {
+      ctx.drawImage(result.value, tileCoords[i].gx, tileCoords[i].gy);
+    }
+  });
+
+  // Draw crosshair at the exact waypoint position
+  // Calculate pixel offset of the waypoint within the canvas
+  const n = Math.pow(2, zoom);
+  const wpPixelX = (((lon + 180) / 360) * n - (center.x - half)) * TILE_SIZE;
+  const latRad = (lat * Math.PI) / 180;
+  const wpPixelY =
+    ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n -
+      (center.y - half)) *
+    TILE_SIZE;
+
+  ctx.strokeStyle = '#ef4444';
+  ctx.lineWidth = 2;
+  const crossSize = 16;
+
+  ctx.beginPath();
+  ctx.moveTo(wpPixelX - crossSize, wpPixelY);
+  ctx.lineTo(wpPixelX + crossSize, wpPixelY);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(wpPixelX, wpPixelY - crossSize);
+  ctx.lineTo(wpPixelX, wpPixelY + crossSize);
+  ctx.stroke();
+
+  // Small circle around crosshair
+  ctx.beginPath();
+  ctx.arc(wpPixelX, wpPixelY, crossSize * 0.6, 0, Math.PI * 2);
+  ctx.stroke();
+
+  let dataUrl: string;
+  try {
+    dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+  } catch {
+    throw new Error(
+      'Cannot access satellite tiles due to browser security restrictions (CORS). ' +
+      'Try using a different browser or disabling strict cross-origin policies.',
+    );
+  }
+
+  return {
+    dataUrl,
+    metersPerPx: mpp,
+    totalWidthM: canvasSize * mpp,
+  };
+}

@@ -1,33 +1,24 @@
 /**
  * Client-side computer vision for detecting landing fields in satellite imagery.
- * Pure canvas pixel analysis — no AI, runs in milliseconds.
+ * Uses a "magic wand" color-similarity flood fill from the waypoint center.
+ * No absolute color thresholds — works on any terrain type.
  */
 
 export interface FieldDetection {
-  /** Convex hull of the detected field in pixel coordinates */
   boundaryPixels: Array<{ x: number; y: number }>;
-  /** Center of the detected field in pixels */
   centerPixel: { x: number; y: number };
-  /** Field dimensions in meters */
   lengthM: number;
   widthM: number;
-  /** Runway/field orientation in degrees (0=north, clockwise) */
   orientationDeg: number;
-  /** Detected surface type */
   surface: 'grass' | 'crop' | 'stubble' | 'bare_earth' | 'paved' | 'mixed' | 'unknown';
-  /** Detected obstructions at field perimeter */
   obstructions: Array<{
     type: 'trees' | 'building' | 'road' | 'water' | 'other';
     pixelPos: { x: number; y: number };
     direction: string;
   }>;
-  /** Number of field pixels found (for confidence) */
   fieldPixelCount: number;
-  /** Total area in square meters */
   areaSqM: number;
 }
-
-// --- Color utilities ---
 
 function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
   r /= 255; g /= 255; b /= 255;
@@ -43,72 +34,58 @@ function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: n
   return { h: h * 360, s, l };
 }
 
-function isFieldPixel(r: number, g: number, b: number): boolean {
-  const { h, s, l } = rgbToHsl(r, g, b);
-
-  // Too dark (shadows, water, dense trees) or too bright (buildings, concrete)
-  if (l < 0.10 || l > 0.92) return false;
-
-  // Green vegetation — grass, crops (wide range)
-  if (h >= 40 && h <= 180 && s > 0.05 && l >= 0.12 && l <= 0.80) return true;
-
-  // Brown/tan/yellow — dry grass, stubble, bare earth, sand
-  if (h >= 15 && h <= 60 && l >= 0.15 && l <= 0.85) return true;
-
-  // Muted/unsaturated earth tones (covers pale/sandy fields)
-  if (s < 0.40 && l >= 0.20 && l <= 0.80) return true;
-
-  return false;
+/** Euclidean color distance in RGB space (0-441) */
+function colorDist(r1: number, g1: number, b1: number, r2: number, g2: number, b2: number): number {
+  return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
 }
-
-function classifyObstruction(r: number, g: number, b: number): 'trees' | 'building' | 'road' | 'water' | null {
-  const { h, s, l } = rgbToHsl(r, g, b);
-
-  // Very dark green = trees/dense vegetation
-  if (h >= 60 && h <= 180 && l < 0.25 && s > 0.1) return 'trees';
-
-  // Dark overall = trees or shadow
-  if (l < 0.15) return 'trees';
-
-  // Very bright = buildings/structures
-  if (l > 0.85) return 'building';
-
-  // Blue = water
-  if (h >= 180 && h <= 260 && s > 0.25) return 'water';
-
-  // Gray, low saturation = road/pavement
-  if (s < 0.1 && l >= 0.3 && l <= 0.7) return 'road';
-
-  return null;
-}
-
-// --- Region growing ---
 
 /**
- * Flood fill on a downsampled grid for performance.
- * Works on every Nth pixel, then fills the full mask.
+ * Sample average color in a small patch around a point.
+ * This smooths out noise and JPEG artifacts.
  */
-function floodFillField(
+function samplePatch(data: Uint8ClampedArray, width: number, height: number, cx: number, cy: number, radius: number): [number, number, number] {
+  let tr = 0, tg = 0, tb = 0, count = 0;
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      const x = cx + dx, y = cy + dy;
+      if (x < 0 || y < 0 || x >= width || y >= height) continue;
+      const i = (y * width + x) * 4;
+      tr += data[i]; tg += data[i + 1]; tb += data[i + 2];
+      count++;
+    }
+  }
+  return [tr / count, tg / count, tb / count];
+}
+
+/**
+ * Magic-wand style flood fill: finds all connected pixels similar in color
+ * to the seed region. Works on a downsampled grid for speed.
+ */
+function similarityFloodFill(
   data: Uint8ClampedArray,
   width: number,
   height: number,
   startX: number,
   startY: number,
+  tolerance: number,
 ): Uint8Array {
-  // Work on a downsampled grid (every 4th pixel) for speed
-  const S = 4;
+  const S = 4; // downsample factor
   const gw = Math.ceil(width / S);
   const gh = Math.ceil(height / S);
-  const grid = new Uint8Array(gw * gh); // 1=field pixel in grid
 
-  // Classify the grid
+  // Sample the seed color from a patch around the start point
+  const [seedR, seedG, seedB] = samplePatch(data, width, height, startX, startY, 8);
+
+  // Build downsampled color grid
+  const gridR = new Float32Array(gw * gh);
+  const gridG = new Float32Array(gw * gh);
+  const gridB = new Float32Array(gw * gh);
+
   for (let gy = 0; gy < gh; gy++) {
     for (let gx = 0; gx < gw; gx++) {
-      const px = gx * S, py = gy * S;
-      const pi = (py * width + px) * 4;
-      if (isFieldPixel(data[pi], data[pi + 1], data[pi + 2])) {
-        grid[gy * gw + gx] = 1;
-      }
+      const [r, g, b] = samplePatch(data, width, height, gx * S, gy * S, 2);
+      const gi = gy * gw + gx;
+      gridR[gi] = r; gridG[gi] = g; gridB[gi] = b;
     }
   }
 
@@ -117,24 +94,7 @@ function floodFillField(
   gsx = Math.min(Math.max(gsx, 0), gw - 1);
   gsy = Math.min(Math.max(gsy, 0), gh - 1);
 
-  // If start isn't a field pixel, search outward
-  if (!grid[gsy * gw + gsx]) {
-    let found = false;
-    for (let r = 1; r < 50 && !found; r++) {
-      for (let dy = -r; dy <= r && !found; dy++) {
-        for (let dx = -r; dx <= r && !found; dx++) {
-          const nx = gsx + dx, ny = gsy + dy;
-          if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
-          if (grid[ny * gw + nx]) {
-            gsx = nx; gsy = ny; found = true;
-          }
-        }
-      }
-    }
-    if (!found) return new Uint8Array(width * height);
-  }
-
-  // Flood fill on grid
+  // Flood fill by color similarity to the seed color
   const visited = new Uint8Array(gw * gh);
   const stack: number[] = [gsy * gw + gsx];
   visited[gsy * gw + gsx] = 1;
@@ -143,23 +103,26 @@ function floodFillField(
     const ci = stack.pop()!;
     const cx = ci % gw;
     const cy = (ci - cx) / gw;
+
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const nx = cx + dx, ny = cy + dy;
       if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
       const ni = ny * gw + nx;
-      if (visited[ni] || !grid[ni]) continue;
-      visited[ni] = 1;
-      stack.push(ni);
+      if (visited[ni]) continue;
+
+      const dist = colorDist(seedR, seedG, seedB, gridR[ni], gridG[ni], gridB[ni]);
+      if (dist < tolerance) {
+        visited[ni] = 1;
+        stack.push(ni);
+      }
     }
   }
 
-  // Expand back to full resolution mask
+  // Expand to full resolution mask
   const mask = new Uint8Array(width * height);
   for (let gy = 0; gy < gh; gy++) {
-    if (!visited[gy * gw]) continue;
     for (let gx = 0; gx < gw; gx++) {
       if (!visited[gy * gw + gx]) continue;
-      // Fill the S×S block
       for (let dy = 0; dy < S && gy * S + dy < height; dy++) {
         for (let dx = 0; dx < S && gx * S + dx < width; dx++) {
           mask[(gy * S + dy) * width + (gx * S + dx)] = 1;
@@ -176,39 +139,29 @@ function floodFillField(
 function convexHull(points: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {
   if (points.length < 3) return points;
   points.sort((a, b) => a.x - b.x || a.y - b.y);
-
   const cross = (o: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }) =>
     (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-
   const lower: Array<{ x: number; y: number }> = [];
   for (const p of points) {
     while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
     lower.push(p);
   }
-
   const upper: Array<{ x: number; y: number }> = [];
   for (let i = points.length - 1; i >= 0; i--) {
     const p = points[i];
     while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
     upper.push(p);
   }
-
-  lower.pop();
-  upper.pop();
+  lower.pop(); upper.pop();
   return lower.concat(upper);
 }
 
 // --- Minimum bounding rectangle ---
 
 function minBoundingRect(hull: Array<{ x: number; y: number }>): {
-  center: { x: number; y: number };
-  width: number;
-  height: number;
-  angle: number; // radians
+  center: { x: number; y: number }; width: number; height: number; angle: number;
 } {
-  if (hull.length < 2) {
-    return { center: hull[0] || { x: 0, y: 0 }, width: 0, height: 0, angle: 0 };
-  }
+  if (hull.length < 2) return { center: hull[0] || { x: 0, y: 0 }, width: 0, height: 0, angle: 0 };
 
   let minArea = Infinity;
   let best = { center: { x: 0, y: 0 }, width: 0, height: 0, angle: 0 };
@@ -216,138 +169,107 @@ function minBoundingRect(hull: Array<{ x: number; y: number }>): {
   for (let i = 0; i < hull.length; i++) {
     const j = (i + 1) % hull.length;
     const edgeAngle = Math.atan2(hull[j].y - hull[i].y, hull[j].x - hull[i].x);
-    const cos = Math.cos(-edgeAngle);
-    const sin = Math.sin(-edgeAngle);
-
+    const cos = Math.cos(-edgeAngle), sin = Math.sin(-edgeAngle);
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const p of hull) {
       const rx = p.x * cos - p.y * sin;
       const ry = p.x * sin + p.y * cos;
-      minX = Math.min(minX, rx);
-      maxX = Math.max(maxX, rx);
-      minY = Math.min(minY, ry);
-      maxY = Math.max(maxY, ry);
+      minX = Math.min(minX, rx); maxX = Math.max(maxX, rx);
+      minY = Math.min(minY, ry); maxY = Math.max(maxY, ry);
     }
-
     const area = (maxX - minX) * (maxY - minY);
     if (area < minArea) {
       minArea = area;
-      const cx = (minX + maxX) / 2;
-      const cy = (minY + maxY) / 2;
-      // Rotate center back
-      const cos2 = Math.cos(edgeAngle);
-      const sin2 = Math.sin(edgeAngle);
+      const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+      const cos2 = Math.cos(edgeAngle), sin2 = Math.sin(edgeAngle);
       best = {
         center: { x: cx * cos2 - cy * sin2, y: cx * sin2 + cy * cos2 },
-        width: maxX - minX,
-        height: maxY - minY,
-        angle: edgeAngle,
+        width: maxX - minX, height: maxY - minY, angle: edgeAngle,
       };
     }
   }
-
   return best;
 }
 
 // --- Surface classification ---
 
-function classifySurface(
-  data: Uint8ClampedArray,
-  mask: Uint8Array,
-  width: number,
-): 'grass' | 'crop' | 'stubble' | 'bare_earth' | 'paved' | 'mixed' | 'unknown' {
+function classifySurface(data: Uint8ClampedArray, mask: Uint8Array, width: number): FieldDetection['surface'] {
   let totalH = 0, totalS = 0, totalL = 0, count = 0;
-
-  for (let i = 0; i < mask.length; i++) {
+  void width;
+  for (let i = 0; i < mask.length; i += 16) { // sparse sample
     if (!mask[i]) continue;
     const { h, s, l } = rgbToHsl(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]);
-    totalH += h; totalS += s; totalL += l;
-    count++;
-    if (count > 50000) break; // sample cap for speed
+    totalH += h; totalS += s; totalL += l; count++;
+    if (count > 10000) break;
   }
-
   if (count === 0) return 'unknown';
-  const avgH = totalH / count;
-  const avgS = totalS / count;
-  const avgL = totalL / count;
+  const avgH = totalH / count, avgS = totalS / count, avgL = totalL / count;
 
-  // Use void to suppress lint for width
-  void width;
-
-  if (avgS < 0.08 && avgL >= 0.35 && avgL <= 0.65) return 'paved';
-  if (avgH >= 60 && avgH <= 160 && avgS > 0.15) return 'grass';
-  if (avgH >= 30 && avgH <= 60 && avgS > 0.1) return 'stubble';
-  if (avgH >= 15 && avgH <= 40 && avgL < 0.40) return 'bare_earth';
-  if (avgH >= 50 && avgH <= 100 && avgS > 0.08 && avgS <= 0.25) return 'crop';
+  if (avgS < 0.08 && avgL >= 0.30 && avgL <= 0.70) return 'paved';
+  if (avgH >= 60 && avgH <= 160 && avgS > 0.12) return 'grass';
+  if (avgH >= 25 && avgH <= 55 && avgS > 0.08) return 'stubble';
+  if (avgH >= 10 && avgH <= 35 && avgL < 0.45) return 'bare_earth';
+  if (avgH >= 50 && avgH <= 100 && avgS > 0.05 && avgS <= 0.20) return 'crop';
   return 'mixed';
 }
 
 // --- Perimeter obstruction detection ---
 
 const DIRECTIONS: Array<{ name: string; dx: number; dy: number }> = [
-  { name: 'north', dx: 0, dy: -1 },
-  { name: 'northeast', dx: 1, dy: -1 },
-  { name: 'east', dx: 1, dy: 0 },
-  { name: 'southeast', dx: 1, dy: 1 },
-  { name: 'south', dx: 0, dy: 1 },
-  { name: 'southwest', dx: -1, dy: 1 },
-  { name: 'west', dx: -1, dy: 0 },
-  { name: 'northwest', dx: -1, dy: -1 },
+  { name: 'north', dx: 0, dy: -1 }, { name: 'northeast', dx: 1, dy: -1 },
+  { name: 'east', dx: 1, dy: 0 }, { name: 'southeast', dx: 1, dy: 1 },
+  { name: 'south', dx: 0, dy: 1 }, { name: 'southwest', dx: -1, dy: 1 },
+  { name: 'west', dx: -1, dy: 0 }, { name: 'northwest', dx: -1, dy: -1 },
 ];
 
+function classifyObstruction(r: number, g: number, b: number): 'trees' | 'building' | 'road' | 'water' | null {
+  const { h, s, l } = rgbToHsl(r, g, b);
+  if (h >= 60 && h <= 180 && l < 0.25 && s > 0.08) return 'trees';
+  if (l < 0.12) return 'trees';
+  if (l > 0.88) return 'building';
+  if (h >= 180 && h <= 260 && s > 0.20) return 'water';
+  if (s < 0.08 && l >= 0.25 && l <= 0.65) return 'road';
+  return null;
+}
+
 function detectObstructions(
-  data: Uint8ClampedArray,
-  mask: Uint8Array,
-  width: number,
-  height: number,
-  centerX: number,
-  centerY: number,
+  data: Uint8ClampedArray, mask: Uint8Array,
+  width: number, height: number, centerX: number, centerY: number,
 ): FieldDetection['obstructions'] {
   const obstructions: FieldDetection['obstructions'] = [];
 
-  // For each direction, walk outward from center until we leave the field,
-  // then sample a patch just outside and classify it
   for (const dir of DIRECTIONS) {
-    let x = centerX, y = centerY;
-    let lastFieldX = x, lastFieldY = y;
-
-    // Walk outward
-    for (let step = 0; step < 500; step++) {
-      x = Math.round(centerX + dir.dx * step * 3);
-      y = Math.round(centerY + dir.dy * step * 3);
+    let lastFieldX = centerX, lastFieldY = centerY;
+    for (let step = 5; step < 400; step += 3) {
+      const x = Math.round(centerX + dir.dx * step);
+      const y = Math.round(centerY + dir.dy * step);
       if (x < 0 || y < 0 || x >= width || y >= height) break;
-      const idx = y * width + x;
-      if (mask[idx]) {
-        lastFieldX = x;
-        lastFieldY = y;
-      } else if (step > 5) {
-        // We've left the field — sample this area
+      if (mask[y * width + x]) {
+        lastFieldX = x; lastFieldY = y;
+      } else if (step > 20) {
         break;
       }
     }
 
-    // Sample a 10x10 patch just outside the field edge
-    const sampleX = lastFieldX + dir.dx * 15;
-    const sampleY = lastFieldY + dir.dy * 15;
-    if (sampleX < 5 || sampleY < 5 || sampleX >= width - 5 || sampleY >= height - 5) continue;
+    const sampleX = lastFieldX + dir.dx * 20;
+    const sampleY = lastFieldY + dir.dy * 20;
+    if (sampleX < 8 || sampleY < 8 || sampleX >= width - 8 || sampleY >= height - 8) continue;
 
     const typeCounts: Record<string, number> = {};
-    for (let dy = -5; dy <= 5; dy++) {
-      for (let dx = -5; dx <= 5; dx++) {
-        const px = sampleX + dx, py = sampleY + dy;
-        const pi = (py * width + px) * 4;
+    for (let dy = -6; dy <= 6; dy += 2) {
+      for (let dx = -6; dx <= 6; dx += 2) {
+        const pi = ((sampleY + dy) * width + (sampleX + dx)) * 4;
         const t = classifyObstruction(data[pi], data[pi + 1], data[pi + 2]);
         if (t) typeCounts[t] = (typeCounts[t] || 0) + 1;
       }
     }
 
-    // Find dominant obstruction type
     let maxCount = 0, maxType: string | null = null;
     for (const [t, c] of Object.entries(typeCounts)) {
       if (c > maxCount) { maxCount = c; maxType = t; }
     }
 
-    if (maxType && maxCount > 30) {
+    if (maxType && maxCount > 15) {
       obstructions.push({
         type: maxType as FieldDetection['obstructions'][0]['type'],
         pixelPos: { x: sampleX, y: sampleY },
@@ -355,21 +277,11 @@ function detectObstructions(
       });
     }
   }
-
   return obstructions;
 }
 
-// --- Main detection function ---
+// --- Main detection ---
 
-/**
- * Detect the landing field in a satellite image canvas.
- * Runs entirely on the client in ~50-200ms.
- *
- * @param canvas - The full-resolution composite canvas (before downscale)
- * @param centerX - Waypoint pixel X in the canvas
- * @param centerY - Waypoint pixel Y in the canvas
- * @param metersPerPx - Scale factor (meters per pixel)
- */
 export function detectField(
   canvas: HTMLCanvasElement,
   centerX: number,
@@ -381,12 +293,43 @@ export function detectField(
   const imageData = ctx.getImageData(0, 0, width, height);
   const data = imageData.data;
 
-  // 1. Flood fill from center to find connected field region
   const cx = Math.round(Math.min(Math.max(centerX, 0), width - 1));
   const cy = Math.round(Math.min(Math.max(centerY, 0), height - 1));
-  const mask = floodFillField(data, width, height, cx, cy);
 
-  // 2. Collect field boundary pixels (subsample for performance)
+  // Color-similarity flood fill with tolerance
+  // Try multiple tolerances and pick the one that gives a reasonable field size
+  let bestMask: Uint8Array | null = null;
+  let bestCount = 0;
+  const minFieldPixels = 100;    // at least this many (4px grid cells)
+  const maxFieldPixels = (width * height) / 4; // not more than 25% of image
+
+  for (const tol of [35, 45, 55, 65, 75]) {
+    const mask = similarityFloodFill(data, width, height, cx, cy, tol);
+    let count = 0;
+    for (let i = 0; i < mask.length; i += 16) { if (mask[i]) count++; }
+    count *= 16;
+
+    if (count >= minFieldPixels && count <= maxFieldPixels) {
+      if (!bestMask || count > bestCount) {
+        bestMask = mask;
+        bestCount = count;
+      }
+      // Stop at first tolerance that gives a reasonable fill
+      // Higher tolerance = larger fill, so stop early for tighter boundary
+      if (count > minFieldPixels * 10) break;
+    }
+  }
+
+  if (!bestMask) {
+    // Fallback: use highest tolerance result even if too large
+    bestMask = similarityFloodFill(data, width, height, cx, cy, 55);
+    for (let i = 0; i < bestMask.length; i += 16) { if (bestMask[i]) bestCount++; }
+    bestCount *= 16;
+  }
+
+  const mask = bestMask;
+
+  // Collect boundary pixels
   const boundaryPoints: Array<{ x: number; y: number }> = [];
   let fieldPixelCount = 0;
 
@@ -394,63 +337,43 @@ export function detectField(
     for (let x = 0; x < width; x += 4) {
       if (!mask[y * width + x]) continue;
       fieldPixelCount++;
-
-      // Check if this is a boundary pixel (has a non-field neighbor)
       let isBoundary = false;
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      for (const [dx, dy] of [[4, 0], [-4, 0], [0, 4], [0, -4]]) {
         const nx = x + dx, ny = y + dy;
         if (nx < 0 || ny < 0 || nx >= width || ny >= height || !mask[ny * width + nx]) {
-          isBoundary = true;
-          break;
+          isBoundary = true; break;
         }
       }
-      if (isBoundary) {
-        boundaryPoints.push({ x, y });
-      }
+      if (isBoundary) boundaryPoints.push({ x, y });
     }
   }
 
-  // Subsample boundary for hull computation (max 2000 points)
   let hullInput = boundaryPoints;
   if (hullInput.length > 2000) {
     const step = Math.ceil(hullInput.length / 2000);
     hullInput = hullInput.filter((_, i) => i % step === 0);
   }
 
-  // 3. Convex hull
   const hull = convexHull(hullInput);
-
-  // 4. Minimum bounding rectangle
   const rect = minBoundingRect(hull);
 
-  // Ensure length > width
   let lengthPx = Math.max(rect.width, rect.height);
   let widthPx = Math.min(rect.width, rect.height);
   let angle = rect.angle;
-  if (rect.height > rect.width) {
-    angle += Math.PI / 2;
-  }
+  if (rect.height > rect.width) angle += Math.PI / 2;
 
-  // Convert angle to compass bearing (0=north, clockwise)
   let bearingDeg = (90 - (angle * 180) / Math.PI) % 360;
   if (bearingDeg < 0) bearingDeg += 360;
-  // Normalize to 0-180 (runway can be used in both directions)
   if (bearingDeg > 180) bearingDeg -= 180;
 
-  // 5. Surface classification
   const surface = classifySurface(data, mask, width);
-
-  // 6. Perimeter obstruction detection
   const obstructions = detectObstructions(data, mask, width, height, cx, cy);
 
-  // Subsample hull for output (max 50 points)
   let outputHull = hull;
   if (outputHull.length > 50) {
     const step = Math.ceil(outputHull.length / 50);
     outputHull = outputHull.filter((_, i) => i % step === 0);
   }
-
-  const areaSqM = fieldPixelCount * 16 * metersPerPx * metersPerPx; // *16 because we step by 4
 
   return {
     boundaryPixels: outputHull,
@@ -460,7 +383,7 @@ export function detectField(
     orientationDeg: Math.round(bearingDeg),
     surface,
     obstructions,
-    fieldPixelCount: fieldPixelCount * 4,
-    areaSqM: Math.round(areaSqM),
+    fieldPixelCount: fieldPixelCount * 16,
+    areaSqM: Math.round(fieldPixelCount * 16 * metersPerPx * metersPerPx),
   };
 }

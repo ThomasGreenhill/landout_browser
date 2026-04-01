@@ -58,6 +58,35 @@ function samplePatch(data: Uint8ClampedArray, width: number, height: number, cx:
 }
 
 /**
+ * Search near the start point for the darkest patch (most likely pavement/runway).
+ * Returns the pixel coordinates of the darkest area found.
+ */
+function findDarkestNearby(
+  data: Uint8ClampedArray, width: number, height: number,
+  cx: number, cy: number, searchRadius: number,
+): { x: number; y: number } {
+  let darkestL = 1.0;
+  let bestX = cx, bestY = cy;
+  const step = 8;
+
+  for (let dy = -searchRadius; dy <= searchRadius; dy += step) {
+    for (let dx = -searchRadius; dx <= searchRadius; dx += step) {
+      const x = cx + dx, y = cy + dy;
+      if (x < 4 || y < 4 || x >= width - 4 || y >= height - 4) continue;
+      const [pr, pg, pb] = samplePatch(data, width, height, x, y, 4);
+      const { l } = rgbToHsl(pr, pg, pb);
+      // Prefer darker areas but not pure black (shadows)
+      if (l < darkestL && l > 0.08) {
+        darkestL = l;
+        bestX = x;
+        bestY = y;
+      }
+    }
+  }
+  return { x: bestX, y: bestY };
+}
+
+/**
  * Magic-wand style flood fill: finds all connected pixels similar in color
  * to the seed region. Works on a downsampled grid for speed.
  */
@@ -293,17 +322,22 @@ export function detectField(
   const imageData = ctx.getImageData(0, 0, width, height);
   const data = imageData.data;
 
-  const cx = Math.round(Math.min(Math.max(centerX, 0), width - 1));
-  const cy = Math.round(Math.min(Math.max(centerY, 0), height - 1));
+  const rawCx = Math.round(Math.min(Math.max(centerX, 0), width - 1));
+  const rawCy = Math.round(Math.min(Math.max(centerY, 0), height - 1));
+
+  // Search nearby for the darkest area (prioritize pavement/runway over grass)
+  const dark = findDarkestNearby(data, width, height, rawCx, rawCy, 80);
+  const cx = dark.x;
+  const cy = dark.y;
 
   // Color-similarity flood fill with tolerance
   // Try multiple tolerances and pick the one that gives a reasonable field size
   let bestMask: Uint8Array | null = null;
   let bestCount = 0;
-  const minFieldPixels = 100;    // at least this many (4px grid cells)
-  const maxFieldPixels = (width * height) / 4; // not more than 25% of image
+  const minFieldPixels = 100;
+  const maxFieldPixels = (width * height) / 4;
 
-  for (const tol of [35, 45, 55, 65, 75]) {
+  for (const tol of [30, 40, 50, 60, 70]) {
     const mask = similarityFloodFill(data, width, height, cx, cy, tol);
     let count = 0;
     for (let i = 0; i < mask.length; i += 16) { if (mask[i]) count++; }
@@ -322,7 +356,7 @@ export function detectField(
 
   if (!bestMask) {
     // Fallback: use highest tolerance result even if too large
-    bestMask = similarityFloodFill(data, width, height, cx, cy, 55);
+    bestMask = similarityFloodFill(data, width, height, cx, cy, 50);
     for (let i = 0; i < bestMask.length; i += 16) { if (bestMask[i]) bestCount++; }
     bestCount *= 16;
   }

@@ -10,7 +10,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.81.0",
     "leaflet": "^1.9.4"
   },
   "devDependencies": {

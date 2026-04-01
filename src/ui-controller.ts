@@ -5,7 +5,7 @@ import { parseCupFile } from './cup-parser';
 import { haversineDistance, bearing, cardinalDirection } from './geo-utils';
 import { MapManager } from './map-manager';
 import { createMarkerIcon, buildTooltipText, buildDetailPanelHtml, buildAnalysisResultHtml, getStyleConfig } from './marker-factory';
-import { analyzeLandingSite, getApiKey, clearApiKey, promptForApiKey } from './landing-analyzer';
+import { analyzeLandingSite, promptForSettings } from './landing-analyzer';
 
 interface MarkerEntry {
   marker: L.Marker;
@@ -84,10 +84,10 @@ export class UIController {
         return;
       }
 
-      const changeKeyLink = target.closest('#change-api-key');
-      if (changeKeyLink) {
+      const settingsLink = target.closest('#change-ollama-settings');
+      if (settingsLink) {
         e.preventDefault();
-        promptForApiKey();
+        promptForSettings();
         return;
       }
 
@@ -152,27 +152,16 @@ export class UIController {
   private async runAnalysis(waypointIndex: number): Promise<void> {
     const wp = this.waypoints[waypointIndex];
 
-    let apiKey = getApiKey();
-    if (!apiKey) {
-      apiKey = await promptForApiKey();
-      if (!apiKey) return;
-    }
-
-    this.updateAnalysisUI({ status: 'loading', message: 'Fetching satellite tiles...' });
+    this.updateAnalysisUI({ status: 'loading', message: 'Connecting to Ollama...' });
 
     try {
-      const result = await analyzeLandingSite(wp, apiKey, (message) => {
+      const result = await analyzeLandingSite(wp, (message) => {
         this.updateAnalysisUI({ status: 'loading', message });
       });
       this.updateAnalysisUI({ status: 'success', result });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Analysis failed';
-      if (message.includes('401') || message.includes('authentication') || message.includes('invalid x-api-key')) {
-        clearApiKey();
-        this.updateAnalysisUI({ status: 'error', error: 'Invalid API key. Click Analyze to try again.' });
-      } else {
-        this.updateAnalysisUI({ status: 'error', error: message });
-      }
+      this.updateAnalysisUI({ status: 'error', error: message });
     }
   }
 

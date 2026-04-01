@@ -239,7 +239,7 @@ export function buildAnalysisResultHtml(result: AnalysisResult): string {
   html += `</div>`;
 
   // Change API key link
-  html += `<div class="analysis-key-link"><a href="#" id="change-api-key">Change API Key</a></div>`;
+  html += `<div class="analysis-key-link"><a href="#" id="change-ollama-settings">Ollama Settings</a></div>`;
 
   return html;
 }

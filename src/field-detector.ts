@@ -77,11 +77,6 @@ function castRay(
   const step = 3;
   let dist = 0, endX = cx, endY = cy;
   let rr = seedR, rg = seedG, rb = seedB;
-  let prevR = seedR, prevG = seedG, prevB = seedB;
-
-  // Edge detection threshold — a sharp jump between adjacent samples
-  // indicates a linear feature (road, fence, tree line) crossing the path
-  const edgeThreshold = 35;
 
   for (let d = step; d < maxDist; d += step) {
     const px = Math.round(cx + dx * d);
@@ -89,55 +84,14 @@ function castRay(
     if (px < 3 || py < 3 || px >= width - 3 || py >= height - 3) break;
     const [pr, pg, pb] = samplePatch(data, width, height, px, py, 2);
 
-    // Edge detection: sharp color jump from previous sample = obstruction boundary
-    const edgeDist = colorDist(prevR, prevG, prevB, pr, pg, pb);
-    if (d > step * 2 && edgeDist > edgeThreshold) {
-      // Check if this is a thin feature (road/fence) by looking past it
-      const lookAheadD = d + step * 3;
-      const lx = Math.round(cx + dx * lookAheadD);
-      const ly = Math.round(cy + dy * lookAheadD);
-      if (lx >= 3 && ly >= 3 && lx < width - 3 && ly < height - 3) {
-        const [lr, lg, lb] = samplePatch(data, width, height, lx, ly, 2);
-        const recoveryDist = colorDist(rr, rg, rb, lr, lg, lb);
-        if (recoveryDist < tolerance * 0.8) {
-          // Color recovers past the feature — this is a thin crossing
-          // (road, fence, path). Stop here — it's an obstruction.
-        } else {
-          // Color doesn't recover — this might just be a field boundary
-        }
-      }
-      break; // Either way, stop at the sharp edge
-    }
-
-    // Gradual drift check against original seed and rolling average
+    // Check against both original seed and rolling average
     const distFromSeed = colorDist(seedR, seedG, seedB, pr, pg, pb);
     const distFromRolling = colorDist(rr, rg, rb, pr, pg, pb);
     if (Math.min(distFromSeed, distFromRolling) > tolerance) break;
 
-    // Also check a perpendicular strip to ensure we're still on a wide-enough surface
-    // (avoids following narrow ditches, paths, or hedgerow gaps)
-    if (d > 30 && d % 15 === 0) {
-      const perpDx = -dy, perpDy = dx; // perpendicular direction
-      let perpWidth = 0;
-      for (let pd = step; pd < 40; pd += step) {
-        const p1x = Math.round(px + perpDx * pd), p1y = Math.round(py + perpDy * pd);
-        const p2x = Math.round(px - perpDx * pd), p2y = Math.round(py - perpDy * pd);
-        if (p1x < 2 || p1y < 2 || p1x >= width - 2 || p1y >= height - 2) break;
-        if (p2x < 2 || p2y < 2 || p2x >= width - 2 || p2y >= height - 2) break;
-        const [r1, g1, b1] = samplePatch(data, width, height, p1x, p1y, 1);
-        const [r2, g2, b2] = samplePatch(data, width, height, p2x, p2y, 1);
-        if (colorDist(rr, rg, rb, r1, g1, b1) > tolerance) break;
-        if (colorDist(rr, rg, rb, r2, g2, b2) > tolerance) break;
-        perpWidth = pd * 2;
-      }
-      // If perpendicular width is too narrow (< ~15m at typical zoom), stop
-      if (perpWidth < 12) break;
-    }
-
     dist = d;
     endX = px;
     endY = py;
-    prevR = pr; prevG = pg; prevB = pb;
     rr = rr * 0.9 + pr * 0.1;
     rg = rg * 0.9 + pg * 0.1;
     rb = rb * 0.9 + pb * 0.1;
